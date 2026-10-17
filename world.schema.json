@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cub's world",
+  "description": "Every object in Cub's world, keyed by its name, and where each flight starts. One unit is a foot; positions are fast3d's 16-bit world positions, 0..65535 on each axis, in a world that wraps; y is up, and the ground is at 0. A turn is an angle about the vertical, 256 to the circle. build.py turns this into the world's assembly.",
+  "type": "object",
+  "required": [
+    "start",
+    "objects"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "start": {
+      "description": "Where the Cub stands at the start of every flight: on the ground, at x, z, pointing along heading.",
+      "type": "object",
+      "required": [
+        "x",
+        "z",
+        "heading"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "$ref": "#/$defs/position"
+        },
+        "z": {
+          "$ref": "#/$defs/position"
+        },
+        "heading": {
+          "$ref": "#/$defs/angle"
+        }
+      }
+    },
+    "objects": {
+      "description": "The objects, each keyed by its name.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/object"
+      }
+    },
+    "comment": {
+      "description": "What the file is, for whoever edits it.",
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "position": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "angle": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "object": {
+      "type": "object",
+      "required": [
+        "kind",
+        "x",
+        "y",
+        "z",
+        "turn"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "What it is: models.KINDS.",
+          "enum": [
+            "runway",
+            "hangar",
+            "windsock"
+          ]
+        },
+        "x": {
+          "$ref": "#/$defs/position"
+        },
+        "y": {
+          "$ref": "#/$defs/position"
+        },
+        "z": {
+          "$ref": "#/$defs/position"
+        },
+        "turn": {
+          "$ref": "#/$defs/angle"
+        },
+        "segments": {
+          "description": "A runway's length, in segments of 250 feet laid end to end along its turn.",
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 32
+        }
+      },
+      "description": "One object. A runway's position is its near end's middle, and it has segments; nothing else has.",
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "runway"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "segments"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "segments"
+          ]
+        }
+      }
+    }
+  }
+}

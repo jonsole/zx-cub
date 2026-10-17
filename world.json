@@ -1,0 +1,33 @@
+{
+  "$schema": "./world.schema.json",
+  "comment": "Cub's world: every object keyed by its name, with its kind (a model in models.py), its position in feet (16-bit, the world wrapping) and its turn about the vertical (256 to the circle); and where each flight starts. A runway is placed by its near end and built of segments 250 feet long along its turn. So far, just the airfield.",
+  "start": {
+    "x": 32768,
+    "z": 30040,
+    "heading": 0
+  },
+  "objects": {
+    "runway": {
+      "kind": "runway",
+      "x": 32768,
+      "y": 0,
+      "z": 30000,
+      "turn": 0,
+      "segments": 8
+    },
+    "hangar": {
+      "kind": "hangar",
+      "x": 32928,
+      "y": 0,
+      "z": 30320,
+      "turn": 64
+    },
+    "windsock": {
+      "kind": "windsock",
+      "x": 32698,
+      "y": 0,
+      "z": 30150,
+      "turn": 0
+    }
+  }
+}
