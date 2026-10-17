@@ -45,7 +45,8 @@ def write_game(path: Path, world: game.World) -> None:
              f"HORIZON_REACH\t\tEQU\t\t{game.HORIZON_REACH}",
              f"VIEW_ATTRIBUTE\t\tEQU\t\t${game.VIEW_ATTRIBUTE:02X}",
              f"PANEL_ATTRIBUTE\t\tEQU\t\t${game.PANEL_ATTRIBUTE:02X}",
-             f"EYE_HEIGHT\t\t\tEQU\t\t{game.EYE_HEIGHT}", f"MAX_STEPS\t\t\tEQU\t\t{game.MAX_STEPS}", ""]
+             f"EYE_HEIGHT\t\t\tEQU\t\t{game.EYE_HEIGHT}", f"VIEW_DOWN\t\t\tEQU\t\t{game.VIEW_DOWN}",
+             f"MAX_STEPS\t\t\tEQU\t\t{game.MAX_STEPS}", ""]
     state = game.start_state(world).pack()
     lines += ["; The game state, as game.STATE_LAYOUT has it."]
     at = 0

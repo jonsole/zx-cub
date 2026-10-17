@@ -18,6 +18,8 @@ import json
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
+import flight
+import j3
 import models
 from fast3d import model
 
@@ -32,9 +34,8 @@ HORIZON_REACH = 128                 # how far each side of the centre the horizo
 VIEW_ATTRIBUTE = 0x28               # black ink on cyan paper
 PANEL_ATTRIBUTE = 0x0F              # white ink on blue paper
 
-EYE_HEIGHT = 7                      # feet: the pilot's eye above the ground, tail down
-GROUND_PITCH = -6 & 0xFF            # the Cub's nose-up attitude on its three wheels,
-                                    # 8.4 degrees (fast3d's pitch is nose down)
+EYE_HEIGHT = 7                      # feet: the pilot's eye above the main wheels
+VIEW_DOWN = flight.angle(j3.VIEW_DOWN)      # the line of sight below the fuselage's datum
 MAX_STEPS = 10                      # the most steps a frame runs, however slow it was
 
 
@@ -73,54 +74,73 @@ def load_world(path: Path = CUB / "world.json") -> World:
     return World(objects, (start["x"], start["z"], start["heading"]))
 
 
-def stored(size: int):
-    """A field of the state, kept in so many bytes."""
-    return field(metadata={"bytes": size})
+def stored(size: int, signed: bool = False):
+    """A field of the state, kept in so many bytes, signed or not."""
+    return field(metadata={"bytes": size, "signed": signed})
 
 
 @dataclass(frozen=True)
 class State:
     """The game state, as the Z80 keeps it from `state`, in this order,
     little-endian (build.py writes its labels from STATE_LAYOUT)."""
-    cub_x: int = stored(2)          # the Cub, feet
-    cub_y: int = stored(2)
-    cub_z: int = stored(2)
-    cub_pitch: int = stored(1)      # its attitude: fast3d's angles
-    cub_heading: int = stored(1)
-    cub_bank: int = stored(1)
+    x: int = stored(4)              # the Cub's main wheels: feet, 16.16 (flight.py's units)
+    y: int = stored(4)
+    z: int = stored(4)
+    heading: int = stored(2)        # its attitude, 65,536 to the turn; pitch nose up
+    pitch: int = stored(2, signed=True)
+    bank: int = stored(2, signed=True)
+    speed: int = stored(3)          # along the flight path, 2^-16 feet a step
+    gamma: int = stored(3, signed=True)     # the flight path's climb, angle units times 256
+    rpm: int = stored(2)            # the engine
+    throttle: int = stored(1)       # 0..255
+    stick: int = stored(1, signed=True)     # back positive, -64..64
+    rudder: int = stored(1, signed=True)    # right positive, -64..64
+    flags: int = stored(1)          # flight.PARKED, flight.GROUND
     clock: int = stored(2)          # steps since the flight began
     keys: int = stored(2)           # the keys held last frame
     drawing: int = stored(1)        # the screen the next frame is drawn on: 0 at $4000, 1 at $C000
 
     def pack(self) -> bytes:
-        return b"".join(getattr(self, name).to_bytes(size, "little") for name, size in STATE_LAYOUT)
+        """The bytes the Z80 keeps. A value its field cannot hold is an error
+        in the flight model, which keeps each in its field's range."""
+        return b"".join(getattr(self, f.name).to_bytes(f.metadata["bytes"], "little", signed=f.metadata["signed"])
+                        for f in fields(self))
 
 
 STATE_LAYOUT = [(f.name, f.metadata["bytes"]) for f in fields(State)]
 
 
 def start_state(world: World) -> State:
-    """As the Spectrum starts: the Cub tail down at the world's start, and
-    the first frame drawn on the screen at $C000, the one not shown."""
+    """As the Spectrum starts, a flight: the Cub tail down at the world's
+    start, lined up, the engine idling, the parking brake on; and the first
+    frame drawn on the screen at $C000, the one not shown."""
     x, z, heading = world.start
-    return State(cub_x=x, cub_y=0, cub_z=z, cub_pitch=GROUND_PITCH, cub_heading=heading, cub_bank=0,
-                 clock=0, keys=0, drawing=1)
+    return State(x=x << 16, y=0, z=z << 16, heading=heading << 8, pitch=flight.THREE_POINT, bank=0,
+                 speed=0, gamma=0, rpm=flight.IDLE_RPM, throttle=0, stick=0, rudder=0,
+                 flags=flight.PARKED | flight.GROUND, clock=0, keys=0, drawing=1)
 
 
-def frame(state: State, world: World, keys: int, steps: int) -> tuple:
-    """(the next state, the screen drawn on, all 6,912 bytes)."""
+def frame(state: State, world: World, held: int, steps: int, draw: bool = True) -> tuple:
+    """(the next state, the screen drawn on, all 6,912 bytes): the steps
+    owed run, at most MAX_STEPS, each with the keys held (keys.py's bits).
+    With draw false,
+    no screen (for tests of the flying alone)."""
     steps = min(steps, MAX_STEPS)
-    after = replace(state, clock=(state.clock + steps) & 0xFFFF, keys=keys, drawing=state.drawing ^ 1)
-    return after, screen(view_lines(after, world))
+    for _ in range(steps):
+        state = flight.step(state, held)
+    after = replace(state, clock=(state.clock + steps) & 0xFFFF, keys=held, drawing=state.drawing ^ 1)
+    return after, screen(view_lines(after, world)) if draw else None
 
 
 def eye(state: State) -> tuple:
-    return state.cub_x, state.cub_y + EYE_HEIGHT, state.cub_z
+    """The camera's position: whole feet, the eye EYE_HEIGHT above the wheels."""
+    return state.x >> 16, ((state.y >> 16) + EYE_HEIGHT) & 0xFFFF, state.z >> 16
 
 
 def camera_angles(state: State) -> tuple:
-    """fast3d's camera angles, about x, y and z: pitch, heading, bank."""
-    return state.cub_pitch, state.cub_heading, state.cub_bank
+    """fast3d's camera angles, about x, y and z: pitch (fast3d's is nose
+    down, and the line of sight VIEW_DOWN below the datum), heading, bank."""
+    return ((VIEW_DOWN - state.pitch) >> 8) & 0xFF, state.heading >> 8, (state.bank >> 8) & 0xFF
 
 
 def view_lines(state: State, world: World) -> list:

@@ -20,6 +20,17 @@ _Avoid_: Physics, simulation
 One fiftieth of a second of the flight model; a frame runs as many steps as have passed since the last one.
 _Avoid_: Tick, update
 
+**Three-point attitude**:
+The Cub resting on its two main wheels and its tailwheel, nose high: how it stands, taxis, and lifts off when the stick is held back.
+_Avoid_: Ground attitude ("tail down" is the same thing, said plainly)
+
+**Tail up**:
+The Cub rolling on its main wheels alone, the tail lifted by the air over the tailplane, the fuselage near level.
+
+**Lift-off**:
+The moment the wing first holds the Cub's whole weight and the wheels leave the ground.
+_Avoid_: Take-off (which is the whole run), rotation
+
 **Stall**:
 The wing losing its lift because its angle to the oncoming air is too steep, so the nose drops.
 

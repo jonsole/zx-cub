@@ -200,17 +200,23 @@ POINTS_ROOM			EQU		POINTS_X_HI				; points a page holds: each of its
 CUT_LINE_SIZE		EQU		8						; a cut line: x0, y0, x1, y1, 16-bit
 
 compute_frame:
-					ld		hl,(state + STATE_CUB_X)	; the eye, EYE_HEIGHT above the
-					ld		(camera_x),hl			; Cub
-					ld		hl,(state + STATE_CUB_Y)
+					ld		hl,(state + STATE_X + 2)	; the eye, EYE_HEIGHT above the
+					ld		(camera_x),hl			; main wheels: whole feet, the
+					ld		hl,(state + STATE_Y + 2)	; positions being 16.16
 					ld		de,EYE_HEIGHT
 					add		hl,de
 					ld		(camera_y),hl
-					ld		hl,(state + STATE_CUB_Z)
+					ld		hl,(state + STATE_Z + 2)
 					ld		(camera_z),hl
-					ld		hl,(state + STATE_CUB_PITCH)	; turned as the Cub: pitch,
-					ld		(camera_angles),hl		; heading, bank
-					ld		a,(state + STATE_CUB_BANK)
+					ld		hl,VIEW_DOWN			; turned as the Cub: the pitch
+					ld		de,(state + STATE_PITCH)	; nose down, as fast3d has it,
+					or		a						; and the line of sight below the
+					sbc		hl,de					; datum
+					ld		a,h
+					ld		(camera_angles),a
+					ld		a,(state + STATE_HEADING + 1)	; the heading and bank, the high
+					ld		(camera_angles + 1),a	; bytes of the Cub's
+					ld		a,(state + STATE_BANK + 1)
 					ld		(camera_angles + 2),a
 					call	set_camera
 					xor		a

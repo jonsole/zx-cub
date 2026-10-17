@@ -23,13 +23,20 @@ sys.path.insert(0, str(CUB))
 sys.path.insert(0, str(CUB.parent / "scripts"))
 
 import game  # noqa: E402
+import keys  # noqa: E402
 import probe  # noqa: E402
 from fast3d import model  # noqa: E402
 
 VARIED = 60         # frames from varied states
-# (keys held, steps owed) a frame: steps past MAX_STEPS are capped, and the
-# keys, which do nothing yet, are kept.
-SCRIPT = [(0, 0), (0, 1), (0, 2), (0x0001, 3), (0x8000, 4), (0, 25), (0xFFFF, 1), (0x1234, 10), (0, 11), (0, 5)]
+# (keys held, steps owed) a frame: steps past MAX_STEPS are capped. The Z80
+# has no flight model until a later stage (game.py's has), so the keys held
+# are only those the flight model does not act on yet -- the stick left and
+# right, and bits no key has -- which are kept all the same; with them the
+# Cub stands idling on its parking brake, and a step changes nothing but
+# the clock.
+IDLE_KEYS = keys.STICK_LEFT | keys.STICK_RIGHT | 0xFE00
+SCRIPT = [(0, 0), (0, 1), (keys.STICK_LEFT, 2), (keys.STICK_RIGHT, 3), (0x8000, 4), (0, 25), (IDLE_KEYS, 1),
+          (0x1200, 10), (0, 11), (0, 5)]
 
 
 def state_differences(want: bytes, got: bytes) -> list:
@@ -80,19 +87,20 @@ def main():
 
         for number, (keys, steps) in enumerate(SCRIPT):
             run(f"frame {number}", keys, steps)
-        # Then frames from states the Cub cannot reach yet, poked into the
-        # Z80's: every pitch, heading and bank, round the airfield and above
-        # it, so that the horizon is drawn at every slope and the airfield
-        # seen, cut and clipped from every side.
+        # Then frames from states poked into the Z80's: every pitch, heading
+        # and bank, round the airfield and above it, so that the horizon is
+        # drawn at every slope and the airfield seen, cut and clipped from
+        # every side. No steps, so that only the view is compared.
         rng = random.Random(1937)
         x0, z0, _ = world.start
         for number in range(VARIED):
-            state = replace(state, cub_x=(x0 + rng.randint(-400, 400)) & 0xFFFF, cub_y=rng.choice([0, 0, 20, 300]),
-                            cub_z=(z0 + rng.randint(-300, 2300)) & 0xFFFF, cub_pitch=rng.randrange(256),
-                            cub_heading=rng.randrange(256), cub_bank=rng.randrange(256))
+            state = replace(state, x=((x0 + rng.randint(-400, 400)) << 16 | rng.randrange(65536)) & 0xFFFFFFFF,
+                            y=rng.choice([0, 0, 20, 300]) << 16 | rng.randrange(65536),
+                            z=((z0 + rng.randint(-300, 2300)) << 16 | rng.randrange(65536)) & 0xFFFFFFFF,
+                            pitch=rng.randrange(-32768, 32768), heading=rng.randrange(65536),
+                            bank=rng.randrange(-32768, 32768))
             z.poke("state", state.pack())
-            run(f"varied frame {number}, the Cub at {state.cub_x}, {state.cub_y}, {state.cub_z}, "
-                f"turned {game.camera_angles(state)}", 0, 1)
+            run(f"varied frame {number}, the eye at {game.eye(state)}, turned {game.camera_angles(state)}", 0, 0)
     for f in failures:
         print("FAIL", f)
     if times:
