@@ -8,8 +8,9 @@ worked out once here and rounded; the tests work out what they should
 come to in floating point from the same figures.
 
 Units, and the widths the Z80 keeps them in:
-  angle     65,536 to the turn (TURN), 16 bits; heading wraps, pitch is
-            signed; fast3d's angles are the high byte
+  angle     65,536 to the turn (TURN), 16 bits; heading wraps, right
+            positive; pitch and bank are signed, nose up and right wing
+            down positive; fast3d's angles are the high byte
   position  feet as 16.16, 32 bits: x, y (up, the main wheels' height) and
             z; x and z wrap with the world
   speed     2^-16 feet a step along the flight path (on the ground, along
@@ -18,16 +19,20 @@ Units, and the widths the Z80 keeps them in:
   gamma     the flight path's climb, angle units times 256, 24 bits signed,
             held to +-90 degrees
   Q         V16^2 >> 12, as the dynamic pressure: 18 bits
+  PER_SPEED the speed's reciprocal, the step's one division: 16 bits
   dV        a step's change of speed, in speed units: G_STEP is gravity's
 The products along the way are wider: the thrust's r^2 K_THRUST and the
-tail's moment 32 bits, a position's speed times a sine 40.
+tail's moment 32 bits, a position's speed times a sine 40; the lift's
+sideways part times PER_SPEED 30 bits at 200 mph and the wing's most lift,
+and its part across the path 27, held to ACROSS_LIMIT.
 
-So far it covers the ground and leaving it: the throttle and the engine,
-the brakes, steering with the rudder, the tail lifting as the air over it
-builds, and lift-off; in the air, the stick turns the nose, the attitude
-holding where it is left, and the flight path climbs or sinks with the
-lift. Banking, turning in the air and the stall's nose drop come with
-flying.
+On the ground: the throttle and the engine, the brakes, steering with the
+rudder, the tail lifting as the air over it builds, and lift-off. In the
+air: the stick pitches and rolls the Cub, the attitude holding where it is
+left; the lift, tilted with the bank, curves the flight path up or down
+and turns it, so that a banked Cub turns without rudder; past the stall
+the nose drops until the wing flies again. Touchdowns are not judged yet:
+back on the ground, the Cub is simply put down.
 """
 import math
 from dataclasses import replace
@@ -62,7 +67,7 @@ SPEED_LIMIT = speed_of(200)         # past any dive the Cub can make, so V16 fit
 # middle when let go.
 THROTTLE_FULL = 255
 THROTTLE_RATE = 4                   # a step: full in 1.3 seconds
-STICK_FULL = 64                     # the stick, back positive
+STICK_FULL = 64                     # the stick, back positive, and right positive
 STICK_RATE = 8
 RUDDER_FULL = 64                    # the rudder, right positive
 RUDDER_RATE = 8
@@ -70,6 +75,7 @@ RUDDER_RATE = 8
 # flags
 PARKED = 1                          # the parking brake: on until the brakes are first pressed
 GROUND = 2                          # on the ground
+STALLED = 4                         # the wing stalled, from past ALPHA_STALL until under ALPHA_RECOVER
 
 
 # --- Sines -----------------------------------------------------------------
@@ -143,12 +149,29 @@ PITCH_RATE = angle(10.0 / STEPS_PER_SECOND)     # at most 10 degrees a second
 # attitude stays where it is left when it springs back: a Cub trimmed as
 # it is flying.
 AIR_PITCH_RATE = angle(j3.AIR_PITCH_RATE / STEPS_PER_SECOND)   # a step, at full stick
+ROLL_RATE = angle(j3.ROLL_RATE / STEPS_PER_SECOND)
+BANK_LIMIT = angle(j3.BANK_LIMIT)
 
-# The flight path turns with the lift left over from holding the weight up:
-# gamma += across K_GAMMA / V16, across held to ACROSS_LIMIT (4 g, so the
-# product fits 30 bits) and V16 to at least V16_FLOOR (10 mph), so that a
-# Cub falling slowly does not turn its path in one step.
-K_GAMMA = round(TURN / (2 * math.pi) * 256 / 16)
+# Past ALPHA_STALL the wing stalls, and the nose drops STALL_PITCH_RATE a
+# step, until the wing is under ALPHA_RECOVER and flying again: full back
+# stick, which raises it AIR_PITCH_RATE, only slows the drop by half. The
+# stall light comes on STALL_WARNING before the stall.
+STALL_PITCH_RATE = angle(j3.STALL_PITCH_RATE / STEPS_PER_SECOND)
+ALPHA_RECOVER = angle(j3.RECOVER_ALPHA)
+ALPHA_WARNING = ALPHA_STALL - angle(j3.STALL_WARNING)
+
+# The lift, tilted with the bank, turns the flight path: its upward part,
+# less the weight's share across the path, curves it up or down, and its
+# sideways part turns it. Each turns it by a force over the speed, so the
+# step's one division is the speed's reciprocal, PER_SPEED = K_PER_SPEED /
+# V16, V16 held to at least V16_FLOOR (10 mph) so that a Cub falling slowly
+# does not turn its path in one step. Then gamma += (across PER_SPEED) >> 8,
+# across held to ACROSS_LIMIT, and
+# heading += (sideways PER_SPEED) >> 16, rounded. ACROSS_LIMIT keeps the
+# flight path from curving faster than 4 g would. (The turn's rate is the
+# sideways force over the speed along the path, not over its level part:
+# a little slow climbing or diving, and no gimbal at 90 degrees.)
+K_PER_SPEED = round(TURN / (2 * math.pi) * 256 / 16 * 256)
 ACROSS_LIMIT = 4 * G_STEP
 V16_FLOOR = speed_of(10) >> 4
 GAMMA_LIMIT = (TURN // 4) << 8
@@ -170,11 +193,10 @@ def lift_coefficient(alpha: int) -> int:
     return CL_MAX - (((alpha - ALPHA_STALL) * CL_SLOPE) >> (CL_SLOPE_SHIFT + 1))
 
 
-def divide(numerator: int, divisor: int) -> int:
-    """Truncated toward zero, a positive divisor, as a restoring division of
-    the numerator's size with its sign put back."""
-    q = abs(numerator) // divisor
-    return -q if numerator < 0 else q
+def attack(pitch: int, gamma: int) -> int:
+    """The wing's angle to the air: the attitude above the flight path, and
+    the wing's incidence."""
+    return signed16(pitch - (gamma >> 8) + INCIDENCE)
 
 
 def step(s, held: int):
@@ -187,6 +209,8 @@ def step(s, held: int):
         throttle = max(0, throttle - THROTTLE_RATE)
     pull = (STICK_FULL if held & keys.STICK_BACK else 0) - (STICK_FULL if held & keys.STICK_FORWARD else 0)
     stick = toward(s.stick, pull, STICK_RATE)
+    lean = (STICK_FULL if held & keys.STICK_RIGHT else 0) - (STICK_FULL if held & keys.STICK_LEFT else 0)
+    stick_roll = toward(s.stick_roll, lean, STICK_RATE)
     push = (RUDDER_FULL if held & keys.RUDDER_RIGHT else 0) - (RUDDER_FULL if held & keys.RUDDER_LEFT else 0)
     rudder = toward(s.rudder, push, RUDDER_RATE)
     flags = s.flags
@@ -205,14 +229,14 @@ def step(s, held: int):
     q = (v16 * v16) >> 12
     on_ground = flags & GROUND
     gamma = 0 if on_ground else s.gamma
-    alpha = signed16(s.pitch - (gamma >> 8) + INCIDENCE)
+    alpha = attack(s.pitch, gamma)
     cl = lift_coefficient(alpha)
     cd = CD0 + ((cl * cl * INDUCED) >> 22)
     lift = (((q * cl) >> 8) * K_AERO) >> 16
     drag = (((q * cd) >> 8) * K_AERO) >> 16
     thrust = ((r * r * K_THRUST) >> 24) - ((v16 * r * K_FALL) >> 24)
 
-    speed, pitch, heading = s.speed, s.pitch, s.heading
+    speed, pitch, heading, bank = s.speed, s.pitch, s.heading, s.bank
     if on_ground:
         load = max(0, G_STEP - lift)
         friction = (load * (ROLLING + (BRAKING if braking else 0))) >> 8
@@ -222,12 +246,19 @@ def step(s, held: int):
         if lift > G_STEP:
             flags &= ~GROUND                    # lift-off
     else:
+        if alpha > ALPHA_STALL:
+            flags |= STALLED
+        elif alpha < ALPHA_RECOVER:
+            flags &= ~STALLED
         speed = min(SPEED_LIMIT, max(0, speed + thrust - drag - ((G_STEP * sin16(gamma >> 8)) >> 15)))
-        across = lift - ((G_STEP * cos16(gamma >> 8)) >> 15)
+        per_speed = K_PER_SPEED // max(v16, V16_FLOOR)
+        across = ((lift * cos16(bank)) >> 15) - ((G_STEP * cos16(gamma >> 8)) >> 15)
         across = max(-ACROSS_LIMIT, min(ACROSS_LIMIT, across))
-        gamma += divide(across * K_GAMMA, max(v16, V16_FLOOR))
-        gamma = max(-GAMMA_LIMIT, min(GAMMA_LIMIT, gamma))
-        pitch = signed16(pitch + ((stick * AIR_PITCH_RATE) >> 6))
+        gamma = max(-GAMMA_LIMIT, min(GAMMA_LIMIT, gamma + ((across * per_speed) >> 8)))
+        sideways = (lift * sin16(bank)) >> 15
+        heading = (heading + ((sideways * per_speed + 0x8000) >> 16)) & 0xFFFF
+        pitch = signed16(pitch + ((stick * AIR_PITCH_RATE) >> 6) - (STALL_PITCH_RATE if flags & STALLED else 0))
+        bank = max(-BANK_LIMIT, min(BANK_LIMIT, bank + ((stick_roll * ROLL_RATE) >> 6)))
 
     # Where it goes.
     along = (speed * cos16(gamma >> 8)) >> 15
@@ -236,12 +267,12 @@ def step(s, held: int):
     y = s.y + ((speed * sin16(gamma >> 8)) >> 15)
     if y <= 0 and not flags & GROUND:
         if gamma < 0 or y < 0:                  # back on the ground
-            y, gamma, flags = 0, 0, flags | GROUND
+            y, gamma, bank, flags = 0, 0, 0, (flags | GROUND) & ~STALLED
             pitch = min(pitch, THREE_POINT)
     y = max(0, y) & 0xFFFFFFFF
 
-    return replace(s, x=x, y=y, z=z, heading=heading, pitch=pitch, speed=speed, gamma=gamma, rpm=rpm,
-                   throttle=throttle, stick=stick, rudder=rudder, flags=flags)
+    return replace(s, x=x, y=y, z=z, heading=heading, pitch=pitch, bank=bank, speed=speed, gamma=gamma,
+                   rpm=rpm, throttle=throttle, stick=stick, stick_roll=stick_roll, rudder=rudder, flags=flags)
 
 
 def tail(pitch: int, stick: int, q: int, r: int) -> int:
@@ -272,6 +303,16 @@ def parked(s) -> bool:
 
 def tail_up(s) -> bool:
     return on_ground(s) and s.pitch < THREE_POINT
+
+
+def stalled(s) -> bool:
+    """Whether the wing is stalled: from past ALPHA_STALL until under ALPHA_RECOVER."""
+    return bool(s.flags & STALLED)
+
+
+def stall_warning(s) -> bool:
+    """The stall light: in the air, the wing stalled or near it."""
+    return not on_ground(s) and (stalled(s) or attack(s.pitch, s.gamma) >= ALPHA_WARNING)
 
 
 def mph(s) -> float:

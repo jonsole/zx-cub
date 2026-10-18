@@ -14,9 +14,10 @@ own flight model.
 
 ## What exists so far
 
-The Cub stands on the runway, rolls, steers, lifts its tail and takes off,
-in the Python model. The Spectrum version draws the view; its flight
-model comes in a later stage.
+In the Python model the Cub stands on the runway, rolls, steers, lifts its
+tail and takes off, then flies: it climbs, turns banked, stalls and
+recovers, with the panel below the view. The Spectrum version draws the
+view; its flight model and its panel come in a later stage.
 
 - **The world** is [world.json](world.json), checked against
   [world.schema.json](world.schema.json): each object keyed by its name,
@@ -33,9 +34,9 @@ model comes in a later stage.
   returns the next state and the whole screen drawn. A frame runs the
   steps owed through the flight model, at most 10, counts them into the
   clock, and draws the cockpit view: the airfield and the horizon line in
-  black on cyan, rows 0 to 17, above an empty white-on-blue panel. The
-  view is drawn with fast3d's model (`examples/fast3d/model.py`), so it is
-  exactly what the engine draws.
+  black on cyan, rows 0 to 17, above the panel in white on blue
+  ([panel.py](panel.py)). The view is drawn with fast3d's model
+  (`examples/fast3d/model.py`), so it is exactly what the engine draws.
 - **The flight model**, [flight.py](flight.py), is a step of a fiftieth
   of a second, in fixed point, as the Z80 will do it
   ([ADR 0002](docs/adr/0002-fixed-point-flight-model.md)). Its constants
@@ -65,7 +66,8 @@ brakes, and the stick back, forward, left and right.
   pressed; after that they are on while it is held. They hold the Cub
   even at full throttle.
 - **The stick and the rudder** move towards where their keys push them and
-  spring back to the middle when let go.
+  spring back to the middle when let go. The stick pitches the Cub, back
+  and forward, and rolls it, left and right.
 - **On the ground**, the wheels' friction acts on what the wing leaves of
   the weight. The rudder turns the Cub at a 40-foot radius at full
   deflection. The tail comes up when the tailplane's lift, from the
@@ -76,14 +78,59 @@ brakes, and the stick back, forward, left and right.
   the load. The Cub lifts off when the wing holds its weight: at 39 mph
   tail down, the manual's figure; at about 60 mph left alone, the tail
   flying itself; or as soon as it is pulled back, from tail up.
-- **In the air**, the stick turns the nose while it is held, and the
-  attitude stays where it is left. The flight path climbs or sinks with
-  the lift.
+- **In the air**, the stick turns the nose and rolls the Cub while it is
+  held, 15 and 30 degrees a second at full stick, and the attitude stays
+  where it is left, as a Cub trimmed for how it is flying. The bank goes
+  no steeper than 60 degrees. The lift, from the airspeed and the wing's
+  angle to the air, is tilted with the bank: its upward part, less the
+  weight's share across the flight path, curves the path up or down, and
+  its sideways part turns it, so that a banked Cub turns without rudder.
+  In a turn some of the lift goes sideways, so holding the height takes a
+  little back stick. Thrust and drag speed the Cub up or slow it, and so
+  does gravity along the path: diving speeds it up, climbing slows it.
+- **The stall.** Past 16.5 degrees of attack the wing stalls: its lift
+  falls away, and the nose drops 30 degrees a second (full back stick
+  only slows it by half) until the wing is under 6 degrees and flying
+  again. The stall
+  light comes on 2 degrees of attack short of the stall, and stays on
+  while the wing is stalled.
+- **How it compares.** Held level as it slows with the throttle closed,
+  it stalls at 37.5 mph, against the manual's 38. Full throttle flies at
+  88 mph, against a published 87. At the throttle that turns the engine
+  at the manual's cruise r.p.m., 2,150, it cruises at 79 mph, against the
+  manual's 73: what the propeller and the drag that make the top speed
+  come to there. Full throttle climbs at 435 feet a minute at 57 mph,
+  against a published 450. [docs/j3-figures.md](docs/j3-figures.md) says
+  which of these the model was tuned to.
+
+### The panel
+
+```
+ MPH   FEET   HDG
+  73   1234   045          STALL
+ THR [throttle....]  CLIMB [sink..|..climb]
+```
+
+The airspeed in miles an hour, the height of the wheels in feet and the
+heading in degrees are numbers; the throttle and the climb are bars, the
+climb a pixel each 25 feet a minute either way of the middle, 800 at most;
+the stall light is the word STALL, dark until it lights in white on red.
+The characters are Cub's own, in [font.py](font.py).
+
+The game state keeps what the panel shows, so that a frame redraws only
+what has changed. Only the values change, so the Spectrum version can draw
+them on both screens at once and the panel is the same whichever screen
+is shown ([ADR 0003](docs/adr/0003-panel-on-both-screens.md)).
 
 ### How it draws
 
 The cockpit view is fast3d's camera at the pilot's eye, 7 feet above the
-main wheels, turned as the Cub is: pitch, heading, bank. The line of sight
+main wheels, turned as the Cub is: rolled by its bank about its own
+length, then pitched, then turned to its heading. fast3d's `make_matrix`
+turns the other way round, rolling last about the world's axis, so with
+the wings level it makes the camera's matrix alone, and banked the matrix
+is made from two of them, multiplied as an object's view matrix is
+(`game.camera_matrix`). The line of sight
 is 6 degrees below the fuselage's datum, so that tail down, 13.6 degrees
 nose up, the view is not all sky. The view is 256 by 144 pixels, centred on row 72: fast3d's
 `SCREEN_CENTRE_Y` is defined to match, and lines are clipped to the view. One unit is a foot, so fast3d's near plane is 8 feet from the
@@ -169,6 +216,8 @@ The checks:
 .\.venv-win\Scripts\python.exe examples\cub\tests\view_test.py           # the Python view against exact geometry
 .\.venv-win\Scripts\python.exe examples\cub\tests\frames_test.py         # the Z80 against the Python, frame by frame
 .\.venv-win\Scripts\python.exe examples\cub\tests\ground_test.py         # rolling, steering, braking, taking off
+.\.venv-win\Scripts\python.exe examples\cub\tests\flying_test.py         # the stall, the speeds, the climb, turning
+.\.venv-win\Scripts\python.exe examples\cub\tests\panel_test.py          # the panel against the state, every frame
 ```
 
 - `world_schema_test.py` checks that the world passes its schema, and
@@ -177,19 +226,24 @@ The checks:
   list where names belong, and so on. It also checks that the schema's
   kinds are models.py's.
 - `view_test.py` checks the horizon for 20,000 cameras, every pitch
-  among them, against the true line worked out in floating point. It also
+  among them, against the true line worked out in floating point. It
+  checks it for 2,000 banked attitudes of the Cub against where the bank
+  puts it, the level horizon turned about the view's centre, so that the
+  view rolls about the Cub's own length whatever the heading. It also
   checks that at the start of a flight the runway's sides are drawn where
   they come into the view, worked out exactly from the runway's corners.
 - `frames_test.py` builds Cub and loads it into the snapshot probe
   (build it with `cpp-core\build.ps1 -Release -Target snapshot_probe`). It
   calls `setup` and turns the test mode on, then runs ten scripted frames
   of steps, then 60 more from varied states poked into the Z80's state, at
-  every pitch, heading and bank, round the airfield and above it. After
-  every frame the whole game state and the whole screen drawn on must
-  match the Python model's. Until the Z80 has the flight model, no keys
-  are held: standing idling on the parking brake, a step changes nothing
-  but the clock. The varied frames run no steps, so they compare only the
-  view.
+  every pitch and heading, round the airfield and above it. After every
+  frame the game state and the screen drawn on must match the Python
+  model's, all but the panel: the state's shown_ fields and the screen's
+  rows below the view. Until the Z80 has the flight model, the keys held
+  are bits no key has: standing idling on the parking brake, a step
+  changes nothing but the clock. The varied frames run no steps, so they
+  compare only the view, and their wings are level, since the Z80's
+  camera does not roll about the Cub's length yet.
 - `ground_test.py` drives scripted runs through the frame and checks them
   against what j3.py's figures work out to in floating point. It covers
   the start, the throttle staying where it is set, and the tail starting
@@ -204,6 +258,28 @@ The checks:
   rudder's turn against its radius, the brakes' stop against their
   friction, and the same run giving the same state at every rate from 1
   to 10 steps a frame.
+- `flying_test.py` flies scripted flights through the frame, with a pilot
+  in the test working the stick from what it sees, a second ahead. It
+  checks the stick springing back and the attitude staying where it is
+  left. Slowing level with the throttle closed, it checks the stall light
+  coming on at the speed its warning angle works out to, and the stall at
+  the manual's 38 mph; then the nose dropping with the stick held back,
+  stopping where the wing flies again, and the Cub recovering as the
+  speed builds. It checks the top speed, the cruise at the throttle that
+  gives the cruise r.p.m. and the best climb against what j3.py's
+  figures work out to in floating point, and against the published
+  figures more loosely. And it checks turns banked left and right, with
+  no rudder, against the turn the lift's sideways part makes, worked out
+  step by step from each state; no turn with the wings level; and a
+  banked Cub left alone sinking, its lift's upward part short of its
+  weight. The speeds are worked out for the path the pilot flies, which
+  sinks a few feet a minute.
+- `panel_test.py` flies a take-off, a climb, a turn, a stall and a dive,
+  three steps a frame, and reads the panel back off every frame's screen:
+  the numbers by their characters, the bars by their pixels, the light by
+  its colour. Each must be what the state works out to in floating
+  point, the numbers truncated, give or take where rounding falls on a
+  boundary.
 
 The test mode leaves out what only runs live: `start`, the interrupt, and
 the wait for it to show a frame. That was checked by running `cub.z80` in
@@ -217,14 +293,21 @@ wrong, 13 varied frames fail. Without the Z80's clock, every frame after
 the first fails. Without the propwash, the tail comes up at 32 mph, not
 25. Without the brakes, full throttle moves the parked Cub. With steering
 twice as hard, the turn is twice as far. With a frame's keys held for its
-first step only, the frame rates disagree.
+first step only, the frame rates disagree. With the bank turning the Cub
+the wrong way, both banked turns fail; with all the lift kept upward when
+banked, a banked Cub left alone does not sink; without the nose drop, the
+stall never ends; with the stall ending only under zero lift, the nose
+stops dropping 7.5 degrees too late; with the side stick not springing back, the
+stick and the attitude checks fail. With the panel's heading a degree
+short in 360, its sink drawn as climb, its light lit only once stalled or
+never updated, or its airspeed 0.3% slow, the panel check fails. With the
+camera rolling about the world's axis, or the wrong way, the banked
+horizon is up to 95 or 138 pixels out.
 
 ## Not done
 
-Everything after taking off. The stages, in order, are this repository's
-sub-issues:
+The stages still to come, in order, are this repository's sub-issues:
 
-- flying and the panel;
 - touchdowns, landings and crashes;
 - the chase view;
 - the whole world;
@@ -233,20 +316,19 @@ sub-issues:
 
 Some limits so far:
 
-- The Spectrum version has no flight model, and outside the test mode
-  reads no keys.
-- In the air the model is only what leaving the ground needs. The stick
-  turns the nose, but nothing rolls or banks, the rudder does nothing, and
-  the stall does not drop the nose. The climb after lift-off is shallow:
-  16 ft in five seconds with the stick let go. Flying comes next.
-- Back on the ground after leaving it, the Cub is simply put down. Telling
-  a landing from a crash comes with touchdowns.
+- The Spectrum version has no flight model and no panel, and outside the
+  test mode reads no keys. Its camera does not roll about the Cub's
+  length yet.
+- In the air the attitude holds where it is left: the Cub has no
+  stability of its own to bring its nose back to where it flies trimmed.
+  The rudder does nothing in the air, and there is no spin, slip or
+  adverse yaw. A turn's rate is worked out from the speed along the path
+  rather than its level part, so it is a little slow climbing or diving.
+- The air is the same at every height, so the Cub has no ceiling.
+- Back on the ground after leaving it, the Cub is simply put down, its
+  wings levelled. Telling a landing from a crash comes with touchdowns.
 - The eye stays 7 feet above the main wheels whatever the attitude.
 - Buildings are drawn see-through. Back faces come with the whole world.
-- The camera's angles go to fast3d's `make_matrix`, which turns about z
-  last, about the world's axis rather than the Cub's. That is right while
-  the Cub's bank is 0, and needs a camera matrix of the Cub's own
-  attitude before it banks in flight.
 - The frame is slower than the 8 frames a second wanted, partly because
   it clears the whole view every frame.
 - `compute_frame` and `render_frame` follow fast3d's demo closely: the

@@ -6,9 +6,9 @@ the next game state and the screen it drew on -- the whole 6,912 bytes, as
 the Z80 leaves them. The view is drawn with fast3d's model
 (examples/fast3d/model.py), so it is exactly what the engine draws.
 
-So far the Cub stands still at the start of the runway: a frame counts the
-steps into the clock and draws the cockpit view, with the horizon line,
-above an empty panel. Keys are taken and kept, and do nothing yet.
+A frame runs the steps owed through the flight model (flight.py), counts
+them into the clock, and draws the cockpit view, with the horizon line,
+above the panel (panel.py).
 
 The view is character rows 0..17 in black on cyan; the panel rows 18..23 in
 white on blue. The view's centre is (CENTRE_X, CENTRE_Y), 256 pixels from
@@ -21,6 +21,7 @@ from pathlib import Path
 import flight
 import j3
 import models
+import panel
 from fast3d import model
 
 CUB = Path(__file__).resolve().parent
@@ -86,7 +87,8 @@ class State:
     x: int = stored(4)              # the Cub's main wheels: feet, 16.16 (flight.py's units)
     y: int = stored(4)
     z: int = stored(4)
-    heading: int = stored(2)        # its attitude, 65,536 to the turn; pitch nose up
+    heading: int = stored(2)        # its attitude, 65,536 to the turn: heading right,
+                                    # pitch nose up, bank right wing down
     pitch: int = stored(2, signed=True)
     bank: int = stored(2, signed=True)
     speed: int = stored(3)          # along the flight path, 2^-16 feet a step
@@ -94,11 +96,19 @@ class State:
     rpm: int = stored(2)            # the engine
     throttle: int = stored(1)       # 0..255
     stick: int = stored(1, signed=True)     # back positive, -64..64
+    stick_roll: int = stored(1, signed=True)    # the stick to the side, right positive, -64..64
     rudder: int = stored(1, signed=True)    # right positive, -64..64
-    flags: int = stored(1)          # flight.PARKED, flight.GROUND
+    flags: int = stored(1)          # flight.PARKED, GROUND, STALLED
     clock: int = stored(2)          # steps since the flight began
     keys: int = stored(2)           # the keys held last frame
     drawing: int = stored(1)        # the screen the next frame is drawn on: 0 at $4000, 1 at $C000
+    # What the panel shows (panel.values), on both screens.
+    shown_mph: int = stored(1)
+    shown_feet: int = stored(2)
+    shown_heading: int = stored(2)
+    shown_throttle: int = stored(1)
+    shown_climb: int = stored(1, signed=True)
+    shown_stall: int = stored(1)
 
     def pack(self) -> bytes:
         """The bytes the Z80 keeps. A value its field cannot hold is an error
@@ -112,12 +122,14 @@ STATE_LAYOUT = [(f.name, f.metadata["bytes"]) for f in fields(State)]
 
 def start_state(world: World) -> State:
     """As the Spectrum starts, a flight: the Cub tail down at the world's
-    start, lined up, the engine idling, the parking brake on; and the first
-    frame drawn on the screen at $C000, the one not shown."""
+    start, lined up, the engine idling, the parking brake on; the first
+    frame drawn on the screen at $C000, the one not shown; and nothing on
+    the panel yet."""
     x, z, heading = world.start
     return State(x=x << 16, y=0, z=z << 16, heading=heading << 8, pitch=flight.THREE_POINT, bank=0,
-                 speed=0, gamma=0, rpm=flight.IDLE_RPM, throttle=0, stick=0, rudder=0,
-                 flags=flight.PARKED | flight.GROUND, clock=0, keys=0, drawing=1)
+                 speed=0, gamma=0, rpm=flight.IDLE_RPM, throttle=0, stick=0, stick_roll=0, rudder=0,
+                 flags=flight.PARKED | flight.GROUND, clock=0, keys=0, drawing=1,
+                 **panel.NOTHING_SHOWN)
 
 
 def frame(state: State, world: World, held: int, steps: int, draw: bool = True) -> tuple:
@@ -128,8 +140,9 @@ def frame(state: State, world: World, held: int, steps: int, draw: bool = True) 
     steps = min(steps, MAX_STEPS)
     for _ in range(steps):
         state = flight.step(state, held)
-    after = replace(state, clock=(state.clock + steps) & 0xFFFF, keys=held, drawing=state.drawing ^ 1)
-    return after, screen(view_lines(after, world)) if draw else None
+    after = replace(state, clock=(state.clock + steps) & 0xFFFF, keys=held, drawing=state.drawing ^ 1,
+                    **panel.values(state))
+    return after, screen(view_lines(after, world), after) if draw else None
 
 
 def eye(state: State) -> tuple:
@@ -139,15 +152,31 @@ def eye(state: State) -> tuple:
 
 def camera_angles(state: State) -> tuple:
     """fast3d's camera angles, about x, y and z: pitch (fast3d's is nose
-    down, and the line of sight VIEW_DOWN below the datum), heading, bank."""
-    return ((VIEW_DOWN - state.pitch) >> 8) & 0xFF, state.heading >> 8, (state.bank >> 8) & 0xFF
+    down, and the line of sight VIEW_DOWN below the datum), heading, and
+    the roll (fast3d's turns the view's right side up: the Cub banked
+    left)."""
+    return ((VIEW_DOWN - state.pitch) >> 8) & 0xFF, state.heading >> 8, ((-state.bank) >> 8) & 0xFF
+
+
+def camera_matrix(state: State) -> list:
+    """Rc, the camera's matrix: the Cub's attitude, rolled about its own
+    length, then pitched, then turned to its heading, Ry Rx Rz. fast3d's
+    make_matrix turns the other way round, Rz Ry Rx, the roll last and about
+    the world's axis; so, banked, Rc is made from two of them, as M = Rc^T Ro
+    is for an object: view_matrix(Ry(-heading), (Rz(-roll) Rx(-pitch))^T).
+    With the wings level the two orders are the same, and make_matrix alone
+    makes it."""
+    x, y, z = camera_angles(state)
+    if z == 0:
+        return model.make_matrix(x, y, 0)
+    return model.view_matrix(model.make_matrix(0, -y & 0xFF, 0), model.transpose(model.make_matrix(-x & 0xFF, 0, -z & 0xFF)))
 
 
 def view_lines(state: State, world: World) -> list:
     """The cockpit view's lines, clipped to the view: the horizon, then each
     object the camera sees, its edges in front of the near plane and those
     crossing it cut there."""
-    rc = model.make_matrix(*camera_angles(state))
+    rc = camera_matrix(state)
     camera = eye(state)
     lines = [horizon_line(rc)]
     for o in world.objects:
@@ -193,11 +222,13 @@ def horizon_line(rc: list):
     return model.clip_line(*ends, WINDOW)
 
 
-def screen(lines: list) -> bytes:
-    """The whole screen: the lines on an empty bitmap, and the attributes."""
+def screen(lines: list, state: State) -> bytes:
+    """The whole screen: the view's lines on an empty bitmap, the panel as
+    the state shows it, and the attributes."""
     bitmap = bytearray(6144)
     for line in lines:
         for x, y in model.line(*line):
             bitmap[model.screen_address(x, y) - 0x4000] |= 0x80 >> (x & 7)
-    attributes = bytes([VIEW_ATTRIBUTE] * (32 * VIEW_ROWS) + [PANEL_ATTRIBUTE] * (32 * (24 - VIEW_ROWS)))
-    return bytes(bitmap) + attributes
+    attributes = bytearray([VIEW_ATTRIBUTE] * (32 * VIEW_ROWS) + [PANEL_ATTRIBUTE] * (32 * (24 - VIEW_ROWS)))
+    panel.draw(bitmap, attributes, state)
+    return bytes(bitmap) + bytes(attributes)

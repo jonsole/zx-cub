@@ -7,7 +7,9 @@ r"""The Python model's view against exact geometry.
    line through every direction level with the ground. Each end drawn must
    lie within HORIZON_BOUND pixels of it, and the line must be drawn
    whenever the true one crosses the view, well inside it.
-2. The start of a flight: the runway's two sides, which run from behind
+2. Banked, at random attitudes, the horizon against where the bank puts
+   it: the view rolled about the Cub's own length, whatever its heading.
+3. The start of a flight: the runway's two sides, which run from behind
    the eye to ahead of it, are drawn from where they come into the view,
    cut at the near plane rather than missing. Where each comes into the
    view is worked out in floating point from the runway's corners and the
@@ -16,6 +18,7 @@ r"""The Python model's view against exact geometry.
 import math
 import random
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 CUB = Path(__file__).resolve().parent.parent
@@ -73,6 +76,36 @@ def check_horizon(failures):
           f"from the true line, {total / max(drawn, 1):.2f} on average")
 
 
+def check_banked(failures):
+    """Banked, the view rolls about the Cub's own length, whatever its
+    heading: the horizon is where it would be with the wings level, the line
+    of sight theta above it, turned about the view's centre by the bank. On
+    the screen, with u = x - CENTRE_X and v = CENTRE_Y - y, that is
+    -u sin(bank) + v cos(bank) + FOCAL tan(theta) = 0: banked right, its
+    right end higher. The angles are whole bytes, as fast3d takes them, so
+    that only the matrices' rounding is measured."""
+    rng = random.Random(1939)
+    world = game.load_world()
+    worst = 0.0
+    for case in range(2000):
+        up, bank, heading = rng.randint(-21, 21), rng.randint(-42, 42), rng.randrange(256)
+        state = replace(game.start_state(world), pitch=game.VIEW_DOWN + 256 * up, bank=256 * bank,
+                        heading=256 * heading, y=500 << 16, flags=0)
+        theta, roll = math.radians(up * 360 / 256), math.radians(bank * 360 / 256)
+        line = (-math.sin(roll), math.cos(roll), game.FOCAL * math.tan(theta))
+        got = game.horizon_line(game.camera_matrix(state))
+        if got is None:
+            if crosses_view(line, HORIZON_BOUND + 1):
+                failures.append(f"banked: pitch {up}, bank {bank}, heading {heading}: no horizon drawn")
+            continue
+        far = max(distance(line, got[0], got[1]), distance(line, got[2], got[3]))
+        worst = max(worst, far)
+        if far > HORIZON_BOUND:
+            failures.append(f"banked: pitch {up}, bank {bank}, heading {heading}: drawn {got}, "
+                            f"{far:.2f} pixels from the true line")
+    print(f"  banked: 2000 attitudes, the horizon's ends at most {worst:.2f} pixels from where the bank puts it")
+
+
 def first_in_view(corner_a, corner_b, eye, rc_float):
     """The nearest point of the line between two world points that is in
     front of the near plane and in the view, projected exactly: (x, y), or
@@ -123,6 +156,7 @@ def check_start(failures):
 def main():
     failures = []
     check_horizon(failures)
+    check_banked(failures)
     check_start(failures)
     for f in failures[:20]:
         print("FAIL", f)

@@ -11,11 +11,13 @@ wall clock, as the Spectrum's interrupt counts them. The keys:
     Q / A           throttle up / down (it stays where it is left)
     Z / X           rudder left / right
     Space           brakes (the first press takes the parking brake off)
-    cursor keys     the stick: down pulls back, up pushes forward
+    cursor keys     the stick: down pulls back, up pushes forward, left and
+                    right roll (it springs back to the middle when let go)
     Escape          close the window
 
-There is no panel yet, so the window's title shows the speed, the engine,
-the throttle and the height.
+The panel shows the airspeed, the height, the heading, the throttle, the
+climb and the stall light; the window's title adds the engine's r.p.m.
+and what the Cub is doing.
 """
 import argparse
 import os
@@ -74,9 +76,8 @@ def keys_held(pygame) -> int:
 
 def readout(state) -> str:
     where = ("parked" if flight.parked(state) else "tail up" if flight.tail_up(state)
-             else "tail down" if flight.on_ground(state) else "flying")
-    return (f"Cub   {flight.mph(state):5.1f} mph   {state.rpm:4d} rpm   throttle {100 * state.throttle // 255:3d}%   "
-            f"{state.y / 65536:6.1f} ft   {where}")
+             else "tail down" if flight.on_ground(state) else "stalled" if flight.stalled(state) else "flying")
+    return f"Cub   {state.rpm:4d} rpm   {where}"
 
 
 def main() -> None:

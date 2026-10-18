@@ -58,6 +58,11 @@ reasonable, and the tests say which results rest on them.
 | Propwash | worth 20 mph over the tail at full rpm | |
 | Tail up | 25 mph, stick central, full throttle | Sets the tail's load |
 | Pitch rate | 10 degrees a second on the ground, 15 in the air | |
+| Roll rate | 30 degrees a second at full stick | A Cub rolls slowly |
+| Steepest bank | 60 degrees | |
+| The stall's nose drop | 30 degrees a second | |
+| Flying again | under 6 degrees of attack | Where the stalled wing's nose drop stops |
+| Stall light | 2 degrees of attack before the stall | About 2 mph above the stalling speed |
 
 ## Worked out
 
@@ -73,7 +78,18 @@ From those, in [j3.py](../j3.py):
   a propeller efficiency of 0.75) balances the drag.
 - **The thrust's fall with speed**, 1.4 lb a mph, from the same balance.
 - **The tail's load**, from the tail coming up at 25 mph.
+- **The stall light**, at 14.5 degrees of attack: on at 40.2 mph slowing
+  level.
 
-The result checks against figures it was not tuned to. Full throttle
-climbs at 443 ft a minute at 55 to 60 mph, against the published 450. A
-take-off held tail down lifts off after 376 ft, against the published 370.
+So the stalling speed, the top speed, the 39 mph lift-off and the tail
+coming up at 25 mph are what the model was tuned to; the tests of those
+check the fixed-point stepping and rounding, not the model.
+
+The rest checks against figures it was not tuned to. Full throttle climbs
+at 435 ft a minute at 57 mph, against the published 450. A take-off held
+tail down lifts off after 376 ft, against the published 370. At the
+throttle that turns the engine at the manual's cruise r.p.m., 2,150, the
+Cub cruises at 79 mph, against the manual's 73: what the propeller and
+the drag that make the top speed come to there (77 worked out in floating
+point, for level flight). The manual's figures would want more drag or
+less thrust at cruise than at full throttle; the model has neither.

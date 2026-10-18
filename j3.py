@@ -56,6 +56,11 @@ BRAKE_FRICTION = 0.30       # more, with the brakes on: enough to hold full thro
 TURN_RADIUS = 40.0          # ft: full rudder, rolling, tailwheel and rudder together
 VIEW_DOWN = 6.0             # degrees the pilot's line of sight is below the datum
 AIR_PITCH_RATE = 15.0       # degrees a second the stick turns the nose, held over
+ROLL_RATE = 30.0            # degrees a second the stick rolls the Cub, held over: a Cub rolls slowly
+BANK_LIMIT = 60.0           # degrees: the steepest bank the Cub is let roll to
+STALL_PITCH_RATE = 30.0     # degrees a second the nose drops, the wing stalled
+RECOVER_ALPHA = 6.0         # degrees of attack: below it the wing is flying again
+STALL_WARNING = 2.0         # degrees of attack before the stall that the stall light comes on
 
 # The tail. It rests on its wheel until the tailplane's lift overcomes the
 # tail's share of the weight. The tailplane's attack is the fuselage's

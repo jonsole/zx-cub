@@ -31,8 +31,15 @@ The Cub rolling on its main wheels alone, the tail lifted by the air over the ta
 The moment the wing first holds the Cub's whole weight and the wheels leave the ground.
 _Avoid_: Take-off (which is the whole run), rotation
 
+**Bank**:
+The Cub rolled about its own length, one wing lower than the other; banked, the lift tilts and turns the Cub without rudder.
+_Avoid_: Roll (which is the movement, not the attitude)
+
 **Stall**:
 The wing losing its lift because its angle to the oncoming air is too steep, so the nose drops.
+
+**Stall light**:
+The panel's light, lit while the wing is near the stall or stalled; the stall warning sound will play while it is lit.
 
 **Touchdown**:
 The moment a wheel first meets the ground, before it is judged a landing or a crash.
