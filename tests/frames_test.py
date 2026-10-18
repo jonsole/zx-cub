@@ -8,17 +8,20 @@ through the examples' shared driver (examples/scripts/probe.py), and runs
 frame takes the keys held and the steps owed from test_keys and
 test_steps instead of the keyboard and the interrupt. Then scripts of
 frames, each a `game_frame` on the Z80 and a `game.frame` in Python; after
-every one, the game state and the screen drawn on must match: all of
-them but the panel, which the Z80 does not draw yet (the panel's shown_
-fields of the state, and the screen's rows below the view).
+every one, the whole game state and the whole screen drawn on must match,
+and the panel's parts the Z80 says it redrew (panel_redrawn) must be those
+whose shown_ fields changed, and no others.
 
 1. Two take-offs from the start of the runway: one held tail down, and
    one tail up, steered with the rudder and pulled off, climbing away into
    a turn. Their frames run from 1 to 12 steps, past the most a frame runs.
-2. Frames from varied flight states poked into the Z80's, on the ground and
+2. A flight in the air, from 70 mph and 300 feet: a climb, a cruise, turns
+   left and right, and a stall held into with the stick back, then let go;
+   the Cub must stall, and recover with the stall light out.
+3. Frames from varied flight states poked into the Z80's, on the ground and
    in the air, with varied keys held, a few steps each: the flight model
    from where no script goes.
-3. Frames from varied views poked into the Z80's, no steps: every pitch,
+4. Frames from varied views poked into the Z80's, no steps: every pitch,
    heading and bank, round the airfield and above it, so that the horizon
    is drawn at every slope and the airfield seen, cut and clipped from
    every side.
@@ -35,8 +38,10 @@ sys.path.insert(0, str(CUB))
 sys.path.insert(0, str(CUB.parent / "scripts"))
 
 import flight  # noqa: E402
+import flying_test  # noqa: E402
 import game  # noqa: E402
 import keys  # noqa: E402
+import panel  # noqa: E402
 import probe  # noqa: E402
 from fast3d import model  # noqa: E402
 
@@ -65,32 +70,39 @@ TAIL_UP = frames([(keys.BRAKES, 1), (FULL | keys.STICK_FORWARD, 30), (FULL | key
                   (FULL | keys.RUDDER_RIGHT, 3), (FULL, 8), (FULL | keys.STICK_BACK, 10), (FULL, 20),
                   (FULL | keys.STICK_LEFT, 4), (FULL | keys.STICK_BACK, 5), (keys.THROTTLE_DOWN, 4),
                   (keys.STICK_RIGHT | keys.VIEW | keys.NEW_FLIGHT, 3), (0, 5)])
-# The state up to the panel's fields, and the screen's view: what the Z80
-# has so far.
-NAMES = [name for name, _ in game.STATE_LAYOUT]
-COMPARED = NAMES[:NAMES.index("shown_mph")]
+# In the air, from 70 mph and 300 feet: a climb at full throttle, a cruise,
+# turns left and right, then the throttle closed and the stick held back
+# into a stall, and let go to recover.
+IN_THE_AIR = frames([(FULL | keys.STICK_BACK, 3), (FULL, 20), (keys.THROTTLE_DOWN, 2), (0, 15),
+                     (keys.STICK_LEFT, 4), (keys.STICK_BACK, 2), (0, 15), (keys.STICK_RIGHT, 8), (0, 10),
+                     (keys.STICK_LEFT, 4), (keys.THROTTLE_DOWN, 12), (keys.STICK_BACK, 30), (0, 30)])
 
 
 def state_differences(want: bytes, got: bytes) -> list:
     out, at = [], 0
     for name, size in game.STATE_LAYOUT:
         w, g = (int.from_bytes(b[at:at + size], "little") for b in (want, got))
-        if w != g and name in COMPARED:
+        if w != g:
             out.append(f"{name} {g} (the model's {w})")
         at += size
     return out
 
 
 def screen_differences(want: bytes, got: bytes) -> list:
-    """The pixels of the view that differ, as (x, y), and its attributes."""
+    """The pixels that differ, as (x, y), and the attributes."""
     out = []
-    for y in range(8 * game.VIEW_ROWS):
+    for y in range(192):
         for x in range(0, 256, 8):
             a = model.screen_address(x, y) - 0x4000
             if want[a] != got[a]:
                 out.append(f"({x + 7 - (want[a] ^ got[a]).bit_length() + 1}, {y})")
-    out += [f"attribute {i}" for i in range(32 * game.VIEW_ROWS) if want[6144 + i] != got[6144 + i]]
+    out += [f"attribute {i}" for i in range(768) if want[6144 + i] != got[6144 + i]]
     return out
+
+
+def changed(before, after) -> int:
+    """The panel's parts whose shown_ fields a frame changed, as panel.REDRAWN's bits."""
+    return sum(bit for name, bit in panel.REDRAWN.items() if getattr(before, name) != getattr(after, name))
 
 
 def flight_state(rng, state, world):
@@ -129,9 +141,13 @@ def main():
             z.poke("test_steps", [steps])
             base = 0xC000 if state.drawing else 0x4000
             times.append(z.call("game_frame").tstates)
+            before = state
             state, want = game.frame(state, world, held, steps)
             differ = state_differences(state.pack(), z.peek("state", size))
             differ += screen_differences(want, z.peek(base, 6912))
+            redrawn = z.peek("panel_redrawn", 1)[0]
+            if redrawn != changed(before, state):
+                differ.append(f"panel redrawn {redrawn:06b} (changed {changed(before, state):06b})")
             if differ:
                 failures.append(f"{what} (keys {held:04X}, {steps} steps): "
                                 f"{len(differ)} differ: {', '.join(differ[:8])}")
@@ -146,6 +162,28 @@ def main():
                   f"{flight.mph(state):.0f} mph")
             if flight.on_ground(state):
                 failures.append(f"take-off, {name}: never left the ground")
+        state = replace(flying_test.flying(70, 200), x=32768 << 16, z=29000 << 16, y=300 << 16)
+        z.poke("state", state.pack())
+        stalled = recovered = False
+        start_y, highest = state.y, state.y
+        turned, left, right = 0, 0, 0               # the heading's change, its least and most
+        for number, (held, steps) in enumerate(IN_THE_AIR):
+            heading = state.heading
+            run(f"in the air, frame {number}", held, steps)
+            turned += (state.heading - heading + 32768) % 65536 - 32768
+            left, right = min(left, turned), max(right, turned)
+            highest = max(highest, state.y)
+            if flight.stalled(state):
+                stalled = True
+            elif stalled and not flight.stall_warning(state):
+                recovered = True
+        climbed = (highest - start_y) >> 16
+        left, right = (round(a * 360 / 65536) for a in (left, right - left))
+        print(f"  in the air: {len(IN_THE_AIR)} frames; climbed {climbed} ft, turned {-left} degrees left and "
+              f"{right} back right, {'stalled' if stalled else 'never stalled'}, "
+              f"{'recovered' if recovered else 'never recovered'}; {state.y >> 16} ft up, {flight.mph(state):.0f} mph")
+        if not (climbed >= 30 and left <= -10 and right >= 10 and stalled and recovered):
+            failures.append("in the air: the flight did not climb, turn both ways, stall and recover")
         rng = random.Random(1937)
         for number in range(FLIGHTS):
             state = flight_state(rng, state, world)

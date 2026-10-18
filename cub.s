@@ -19,7 +19,7 @@
 ;   bank 5, $4000   the first screen; at $6000 the points, the objects drawn
 ;                   and the lines cut at the near plane
 ;   bank 7, $C000   the second screen, paged in all the time; from $DB00
-;                   the flight model (flight.s)
+;                   the flight model (flight.s) and the panel (panel.s)
 					DEVICE	ZXSPECTRUM128
 
 					INCLUDE	"output/game_gen.s"		; game.py's constants, and the state's layout
@@ -66,6 +66,7 @@ setup:
 					call	clear_screen
 					ld		hl,$C000
 					call	clear_screen
+					call	panel_still			; the panel's unchanging parts, on both
 					ld		b,VIEW_LEFT
 					ld		c,VIEW_TOP
 					ld		d,VIEW_RIGHT
@@ -124,6 +125,7 @@ game_frame:
 					dec		a
 					jr		nz,.step
 .flown:
+					call	panel_frame			; what the panel shows, as it changed
 					call	compute_frame
 					call	wait_flip
 					call	render_frame
@@ -1017,6 +1019,7 @@ code_end:
 					PAGE	7
 					ORG		$DB00
 					INCLUDE	"flight.s"
+					INCLUDE	"panel.s"
 flight_end:
 					ASSERT	flight_end <= $10000
 

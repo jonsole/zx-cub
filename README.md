@@ -18,7 +18,7 @@ In the Python model the Cub stands on the runway, rolls, steers, lifts its
 tail and takes off, then flies: it climbs, turns banked, stalls and
 recovers, with the panel below the view. The Spectrum version flies the
 same flight model from the keyboard or an Interface II joystick, and
-draws the view; its panel comes in a later stage.
+draws the view and the panel the same way, byte for byte.
 
 - **The world** is [world.json](world.json), checked against
   [world.schema.json](world.schema.json): each object keyed by its name,
@@ -49,8 +49,10 @@ draws the view; its panel comes in a later stage.
   keyboard and shows its frames as the Spectrum would.
 - **The Spectrum version**, [cub.s](cub.s), is a 128K program. Each frame
   reads the keys, runs the steps owed through the flight model,
-  [flight.s](flight.s), and draws the view on the screen not being shown,
-  to be shown at the next interrupt, as fast3d's demo does. The interrupt
+  [flight.s](flight.s), redraws what changed on the panel
+  ([panel.s](panel.s)) on both screens, and draws the view on the screen
+  not being shown, to be shown at the next interrupt, as fast3d's demo
+  does. The interrupt
   counts fiftieths, and a step is owed for every two. It has a test mode,
   in which the keys and the steps owed come from `test_keys` and
   `test_steps` rather than the keyboard and the interrupt.
@@ -132,9 +134,17 @@ the stall light is the word STALL, dark until it lights in white on red.
 The characters are Cub's own, in [font.py](font.py).
 
 The game state keeps what the panel shows, so that a frame redraws only
-what has changed. Only the values change, so the Spectrum version can draw
+what has changed. Only the values change, so the Spectrum version draws
 them on both screens at once and the panel is the same whichever screen
-is shown ([ADR 0003](docs/adr/0003-panel-on-both-screens.md)).
+is shown ([ADR 0003](docs/adr/0003-panel-on-both-screens.md)). Its
+unchanging parts -- the labels, the stall light's word, the bars' feet --
+are drawn once at the start, from the bytes `panel.draw_static` inks,
+which build.py lists. Each frame then works out what the panel shows as
+`panel.values` does, and redraws each part whose shown_ field differs: a
+number from its decimal digits, a bar as eight bytes a line from a table
+of left-hand masks, the light by its five attributes. With nothing
+changed that takes about 3,200 T-states; with everything, as on the first
+frame, 32,000.
 
 ### How it draws
 
@@ -193,7 +203,9 @@ putting each object's centre right 5,100 an object, 51,000 for the start's
 ten. A step of the flight model takes about 17,500 more on the ground and
 34,000 in the air, and a frame runs a step for every 25th of a second it
 takes. So on the runway a frame takes about 685,000 T-states, 5.2 frames
-a second on a 128K's 3.5469 MHz, and in the air about 760,000, 4.7.
+a second on a 128K's 3.5469 MHz, and in the air about 760,000, 4.7; the
+panel adds 3,200 a frame, and a few thousand more for each number that
+changed.
 
 ### The flight model on the Z80
 
@@ -222,7 +234,7 @@ half of it in `umul16`.
 |---|---|
 | bank 2, `$8000` | the program, fast3d and the world |
 | bank 5, `$4000` | the first screen; from `$6000` the points, the objects drawn and the lines cut at the near plane |
-| bank 7, `$C000` | the second screen, paged in all the time; from `$DB00` the flight model, its sines and its quarter squares |
+| bank 7, `$C000` | the second screen, paged in all the time; from `$DB00` the flight model, its sines and its quarter squares, and the panel |
 
 ## Where it lives
 
@@ -298,10 +310,14 @@ The checks:
   each, past the 10 a frame runs. Then 60 frames from varied flight states
   poked into the Z80's, on the ground and in the air up to 200 mph, with
   varied keys and a few steps each; and 60 from varied views, no steps, at
-  every pitch, heading and bank round the airfield and above it. After
-  every frame the game state and the screen drawn on must match the Python
-  model's, all but the panel: the state's shown_ fields and the screen's
-  rows below the view.
+  every pitch, heading and bank round the airfield and above it. Between
+  them, a flight in the air from 70 mph and 300 feet: a climb, a cruise,
+  turns left and right, then the throttle closed and the stick held back
+  into a stall, and let go; it must stall and recover with the stall light
+  out. After every frame the whole game state and the whole screen drawn
+  on, panel and all, must match the Python model's, and the panel's parts
+  the Z80 says it redrew (`panel_redrawn`) must be those whose shown_
+  fields changed, and no others.
 - `ground_test.py` drives scripted runs through the frame and checks them
   against what j3.py's figures work out to in floating point. It covers
   the start, the throttle staying where it is set, and the tail starting
@@ -366,7 +382,11 @@ differ. In the Z80's flight model, with the engine's lag a shift too far,
 a step's change of speed not doubled, every product taken as positive, or
 the sines taken below rather than at the nearest, 145 to 245 frames
 differ; with the quarter squares' seventeenth bit dropped, one varied
-flight at over 130 mph does, which no take-off reaches. Without the objects' centres put right, they are 0.85 pixels out
+flight at over 130 mph does, which no take-off reaches. In the Z80's
+panel, with the airspeed redrawn every frame whether it changed or not,
+246 frames fail on what was redrawn; with leading blanks drawn as zeros,
+every frame; with a bar's last pixel lost, 451; with the sink drawn as
+climb, 85; with everything drawn on the first screen alone, 232. Without the objects' centres put right, they are 0.85 pixels out
 on average and up to 2.5; without it on the Z80 alone, 48 pixels of the
 first frame differ.
 
@@ -382,8 +402,9 @@ The stages still to come, in order, are this repository's sub-issues:
 
 Some limits so far:
 
-- The Spectrum version has no panel yet. Its flight model takes about
-  12% of its time on the ground and 24% in the air.
+- The Spectrum version's flight model takes about 12% of its time on the
+  ground and 24% in the air, and its frame rate is well short of the 8 a
+  second wanted.
 - In the air the attitude holds where it is left: the Cub has no
   stability of its own to bring its nose back to where it flies trimmed.
   The rudder does nothing in the air, and there is no spin, slip or

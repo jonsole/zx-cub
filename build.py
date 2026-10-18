@@ -21,7 +21,9 @@ sys.path.insert(0, str(CUB.parent / "scripts"))
 
 import flight  # noqa: E402
 import game  # noqa: E402
+import font  # noqa: E402
 import keys  # noqa: E402
+import panel  # noqa: E402
 import models  # noqa: E402
 import z80file  # noqa: E402
 from fast3d import FAST3D, build as fast3d_build  # noqa: E402
@@ -75,6 +77,32 @@ def write_game(path: Path, world: game.World) -> None:
     lines += ["", "; keys.py's bits."]
     lines += [f"KEY_{name}\t\tEQU\t\t${getattr(keys, name):04X}" for name in KEY_NAMES]
     lines += [""]
+    # The panel's unchanging parts, as (offset into a screen, byte) for each
+    # byte they ink; and the glyphs of the digits 0 to 9 and a blank.
+    still = bytearray(6144)
+    panel.draw_static(still)
+    inked = [(i, b) for i, b in enumerate(still) if b]
+    lines += ["; The panel's unchanging parts (panel.draw_static): DW the offset into a",
+              "; screen, DB the byte there; for setup to draw on both screens.",
+              f"PANEL_STILL_COUNT\tEQU\t\t{len(inked)}", "\t\t\t\t\tMACRO\tPANEL_STILL"]
+    lines += [f"\t\t\t\t\tDW\t\t${i:04X}\n\t\t\t\t\tDB\t\t${b:02X}" for i, b in inked]
+    lines += ["\t\t\t\t\tENDM", "; The digits' glyphs, 0 to 9 and a blank, 8 bytes each (font.py).",
+              "\t\t\t\t\tMACRO\tDIGIT_GLYPHS"]
+    lines += ["\t\t\t\t\tDB\t\t" + ", ".join(f"${b:02X}" for b in font.glyph(c)) for c in "0123456789 "]
+    lines += ["\t\t\t\t\tENDM", ""]
+    for name in ("NUMBER_ROW", "BAR_ROW", "STALL_COLUMN", "LIGHT_OFF", "LIGHT_ON", "THROTTLE_SHIFT", "CLIMB_REACH",
+                 "K_MPH", "K_CLIMB", "BAR_WIDTH"):
+        lines.append(f"PANEL_{name}\t\tEQU\t\t{getattr(panel, name)}")
+    for name in ("SPEED", "HEIGHT", "HEADING"):
+        column, places, zeros = getattr(panel, name)
+        lines += [f"PANEL_{name}_COLUMN\tEQU\t\t{column}", f"PANEL_{name}_PLACES\tEQU\t\t{places}",
+                  f"PANEL_{name}_ZEROS\tEQU\t\t{int(zeros)}"]
+    lines += [f"PANEL_STALL_CELLS\tEQU\t\t{len(panel.STALL_WORD)}", "PANEL_BLANK\t\tEQU\t\t10\t\t\t\t; DIGIT_GLYPHS' blank"]
+    lines += [f"PANEL_THROTTLE_COLUMN\tEQU\t\t{panel.THROTTLE_LEFT // 8}",
+              f"PANEL_CLIMB_COLUMN\tEQU\t\t{(panel.CLIMB_CENTRE - panel.BAR_WIDTH // 2) // 8}",
+              f"PANEL_BAR_FIRST_LINE\tEQU\t\t{panel.BAR_LINES[0]}", f"PANEL_BAR_LINES\tEQU\t\t{len(panel.BAR_LINES)}"]
+    lines += [f"PANEL_REDRAWN_{name[6:].upper()}\tEQU\t\t{bit}" for name, bit in panel.REDRAWN.items()]
+    lines += ["ALPHA_WARNING\t\tEQU\t\t" + str(flight.ALPHA_WARNING), ""]
     squares = [n * n // 4 for n in range(512)]
     lines += ["; Quarter squares, n n / 4 for n = 0..511, for flight.s's MUL8: the low",
               "; bytes, then the high.", "\t\t\t\t\tMACRO\tSQUARES"]

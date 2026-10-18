@@ -44,7 +44,8 @@ FPM_A_PIXEL = 25                    # feet a minute a pixel: 800 either way, pas
 
 # Airspeed in miles an hour: (V16 K_MPH) >> 20, V16 = speed >> 4.
 K_MPH = round(16 * 2 ** 20 / (j3.MPH * flight.SPEED_PER_FPS))
-# The climb bar: a tick's rise, 2^-16 feet, (rise K_CLIMB) >> 16 pixels,
+# The climb bar: a tick's rise, 2^-16 feet, ((speed >> 3) sin(gamma)) >> 12
+# so that the product fits 32 bits, then (rise K_CLIMB) >> 16 pixels,
 # truncated toward zero.
 K_CLIMB = round(flight.TICKS_PER_SECOND * 60 / FPM_A_PIXEL)
 
@@ -58,7 +59,7 @@ NOTHING_SHOWN = {"shown_mph": 0xFF, "shown_feet": 0xFFFF, "shown_heading": 0xFFF
 
 def values(s) -> dict:
     """What the panel shows of the state, by the state's fields that keep it."""
-    rise = (s.speed * flight.sin16(s.gamma >> 8)) >> 15
+    rise = ((s.speed >> 3) * flight.sin16(s.gamma >> 8)) >> 12
     climb = (abs(rise) * K_CLIMB) >> 16
     return {"shown_mph": ((s.speed >> 4) * K_MPH) >> 20,
             "shown_feet": s.y >> 16,
@@ -87,9 +88,21 @@ def span(bitmap: bytearray, left: int, right: int, y: int) -> None:
         bitmap[model.screen_address(x, y) - 0x4000] |= 0x80 >> (x & 7)
 
 
+# The parts the Z80 redraws, as bits of the byte it says it redrew them in.
+REDRAWN = {"shown_mph": 1, "shown_feet": 2, "shown_heading": 4, "shown_throttle": 8, "shown_climb": 16,
+           "shown_stall": 32}
+
+
 def draw(bitmap: bytearray, attributes: bytearray, s) -> None:
     """The panel as the state's shown_ fields have it, on the bitmap and the
     attributes of a screen whose panel rows are empty."""
+    draw_static(bitmap)
+    draw_values(bitmap, attributes, s)
+
+
+def draw_static(bitmap: bytearray) -> None:
+    """What never changes: the labels, the stall light's word, the bars'
+    feet and the climb bar's middle. The Z80 draws it once, at the start."""
     for column, row, text in LABELS:
         put(bitmap, column, row, text)
     put(bitmap, STALL_COLUMN, NUMBER_ROW, STALL_WORD)
@@ -99,6 +112,10 @@ def draw(bitmap: bytearray, attributes: bytearray, s) -> None:
     for line in (0, 1, 6):
         span(bitmap, CLIMB_CENTRE, CLIMB_CENTRE, 8 * BAR_ROW + line)
 
+
+def draw_values(bitmap: bytearray, attributes: bytearray, s) -> None:
+    """The numbers, the bars and the stall light, as the state's shown_
+    fields have them."""
     for value, (column, places, zeros) in ((s.shown_mph, SPEED), (s.shown_feet, HEIGHT),
                                            (s.shown_heading, HEADING)):
         put(bitmap, column, NUMBER_ROW, digits(value, places, zeros))
