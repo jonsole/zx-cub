@@ -208,17 +208,8 @@ compute_frame:
 					ld		(camera_y),hl
 					ld		hl,(state + STATE_Z + 2)
 					ld		(camera_z),hl
-					ld		hl,VIEW_DOWN			; turned as the Cub: the pitch
-					ld		de,(state + STATE_PITCH)	; nose down, as fast3d has it,
-					or		a						; and the line of sight below the
-					sbc		hl,de					; datum
-					ld		a,h
-					ld		(camera_angles),a
-					ld		a,(state + STATE_HEADING + 1)	; the heading and bank, the high
-					ld		(camera_angles + 1),a	; bytes of the Cub's
-					ld		a,(state + STATE_BANK + 1)
-					ld		(camera_angles + 2),a
-					call	set_camera
+					call	camera_matrix			; turned as the Cub
+					call	set_camera_matrix
 					xor		a
 					ld		(drawn),a
 					ld		(cuts),a
@@ -233,6 +224,7 @@ compute_frame:
 					ld		(.objects_left),a
 .object:			call	cull_object
 					jr		c,.next					; out of view
+					call	fine_centre			; T, put right
 					ld		(.object_at),ix			; (object_matrix and
 					ld		hl,drawn				; transform_object do not)
 					inc		(hl)
@@ -508,6 +500,408 @@ draw_horizon:
 .u_y:				DB		0
 .sign:				DB		0						; the divisor's
 .a_sign:			DB		0						; and the sign a's numerator takes
+
+
+; ---------------------------------------------------------------------------
+; camera_matrix: Rc^T into fast3d's matrix_t, for set_camera_matrix, from
+; the Cub's attitude in its full 16 bits (game.camera_matrix): the line of
+; sight's pitch x = VIEW_DOWN - pitch, the heading y and the roll z = -bank,
+; Rc = Ry Rx Rz. Each product is Q15's, in game.camera_matrix's order, and
+; each entry rounded to a byte, 127 for 1.0. Uses everything but IY and the
+; alternate registers.
+
+; DE = (FIRST)(SECOND), Q15.
+					MACRO	PRODUCT	FIRST, SECOND
+					ld		bc,(FIRST)
+					ld		de,(SECOND)
+					call	q15
+					ENDM
+
+; Rc's entry at ROW, COLUMN from DE, into matrix_t, which holds Rc^T row by
+; row (Rc's columns), and what its rounding left out into fine_t, the same
+; way round.
+					MACRO	ENTRY_AT	ROW, COLUMN
+					call	matrix_entry
+					ld		(matrix_t + 3 * COLUMN + ROW),a
+					ld		a,e
+					ld		(fine_t + 3 * COLUMN + ROW),a
+					ENDM
+
+camera_matrix:
+					ld		hl,VIEW_DOWN			; x, nose down as fast3d has it
+					ld		de,(state + STATE_PITCH)
+					or		a
+					sbc		hl,de
+					ld		ix,camera_sx
+					call	sine_cosine
+					ld		hl,(state + STATE_HEADING)	; y
+					ld		ix,camera_sy
+					call	sine_cosine
+					ld		hl,0					; z, the view's right side up
+					ld		de,(state + STATE_BANK)	; with the Cub banked left
+					or		a
+					sbc		hl,de
+					ld		ix,camera_sz
+					call	sine_cosine
+					PRODUCT	camera_sx, camera_sz
+					ld		(camera_sxsz),de
+					PRODUCT	camera_sx, camera_cz
+					ld		(camera_sxcz),de
+
+					PRODUCT	camera_cy, camera_cz	; m00 = cy cz + sy sxsz
+					push	de
+					PRODUCT	camera_sy, camera_sxsz
+					pop		hl
+					add		hl,de
+					ex		de,hl
+					ENTRY_AT	0, 0
+					PRODUCT	camera_sy, camera_sxcz	; m01 = sy sxcz - cy sz
+					push	de
+					PRODUCT	camera_cy, camera_sz
+					pop		hl
+					or		a
+					sbc		hl,de
+					ex		de,hl
+					ENTRY_AT	0, 1
+					PRODUCT	camera_sy, camera_cx	; m02 = sy cx
+					ENTRY_AT	0, 2
+					PRODUCT	camera_cx, camera_sz	; m10 = cx sz
+					ENTRY_AT	1, 0
+					PRODUCT	camera_cx, camera_cz	; m11 = cx cz
+					ENTRY_AT	1, 1
+					ld		hl,0					; m12 = -sx
+					ld		de,(camera_sx)
+					or		a
+					sbc		hl,de
+					ex		de,hl
+					ENTRY_AT	1, 2
+					PRODUCT	camera_cy, camera_sxsz	; m20 = cy sxsz - sy cz
+					push	de
+					PRODUCT	camera_sy, camera_cz
+					pop		hl
+					or		a
+					sbc		hl,de
+					ex		de,hl
+					ENTRY_AT	2, 0
+					PRODUCT	camera_sy, camera_sz	; m21 = sy sz + cy sxcz
+					push	de
+					PRODUCT	camera_cy, camera_sxcz
+					pop		hl
+					add		hl,de
+					ex		de,hl
+					ENTRY_AT	2, 1
+					PRODUCT	camera_cy, camera_cx	; m22 = cy cx
+					ENTRY_AT	2, 2
+					ret
+
+; sine_cosine: the sine and cosine of the angle HL, Q15, into the two words
+; at IX. Uses everything but IX, IY and the alternate registers.
+sine_cosine:
+					push	hl
+					call	sin16
+					ld		(ix + 0),e
+					ld		(ix + 1),d
+					pop		hl
+					ld		de,$4000				; a quarter turn on
+					add		hl,de
+					call	sin16
+					ld		(ix + 2),e
+					ld		(ix + 3),d
+					ret
+
+; sin16: DE = the sine of the angle HL, 65,536 to the turn, Q15, as
+; flight.sin16: sine_table's two entries either side, interpolated by the
+; low byte, floored. Uses everything but IX, IY and the alternate registers.
+sin16:
+					ld		a,l						; the fraction
+					push	af
+					ld		l,h
+					ld		h,0
+					add		hl,hl
+					ld		de,sine_table
+					add		hl,de
+					ld		e,(hl)					; DE = s0
+					inc		hl
+					ld		d,(hl)
+					inc		hl
+					ld		c,(hl)					; BC = s1
+					inc		hl
+					ld		b,(hl)
+					push	de
+					ld		h,b
+					ld		l,c
+					or		a
+					sbc		hl,de
+					ld		b,h						; BC = s1 - s0
+					ld		c,l
+					pop		hl						; s0
+					pop		af
+					push	hl
+					ld		e,a
+					ld		d,0
+					call	multiply				; (s1 - s0) times the fraction,
+					ld		l,h						; HL = that >> 8: at most 805 times
+					ld		h,e						; 255, so 18 bits
+					pop		de
+					add		hl,de
+					ex		de,hl
+					ret
+
+; q15: DE = BC DE >> 15, floored (game.q15): the high word of the product
+; shifted left once. Uses everything but IX, IY and the alternate registers.
+q15:
+					call	multiply
+					add		hl,hl
+					rl		e
+					rl		d
+					ret
+
+; multiply: DE:HL = BC DE, signed 16 bits by 16 into 32. Uses everything but
+; IX, IY and the alternate registers.
+multiply:
+					ld		a,b
+					xor		d
+					push	af						; the product's sign, in S
+					bit		7,b
+					jr		z,.bc_size
+					xor		a
+					sub		c
+					ld		c,a
+					sbc		a,a
+					sub		b
+					ld		b,a
+.bc_size:
+					bit		7,d
+					jr		z,.de_size
+					xor		a
+					sub		e
+					ld		e,a
+					sbc		a,a
+					sub		d
+					ld		d,a
+.de_size:
+					ld		hl,0					; DE:HL = BC DE, unsigned: DE
+					ld		a,16					; shifts out at the top as the
+.bit:
+					add		hl,hl					; product shifts in below
+					rl		e
+					rl		d
+					jr		nc,.next
+					add		hl,bc
+					jr		nc,.next
+					inc		de
+.next:
+					dec		a
+					jr		nz,.bit
+					pop		af
+					ret		p
+					xor		a						; negative: DE:HL = -DE:HL
+					sub		l
+					ld		l,a
+					ld		a,0
+					sbc		a,h
+					ld		h,a
+					ld		a,0
+					sbc		a,e
+					ld		e,a
+					ld		a,0
+					sbc		a,d
+					ld		d,a
+					ret
+
+; matrix_entry: A = (127 DE + 16,384) >> 15, a Q15 entry as fast3d keeps it,
+; 127 for 1.0 (game.matrix_entry), and E = what that left out, in 32nds of
+; its unit (game.matrix_residual): (127 DE + 512) >> 10 less 32 A, of which
+; only the low byte is needed, the residual being within +-16. C:H:L = 128
+; DE - DE, 24 bits; A its bits 15 to 22, rounded; E (C:H + 2) >> 2's low
+; byte, less 32 times A's low three bits. Uses AF, BC, DE, HL.
+matrix_entry:
+					ld		c,d						; C:H:L = DE 256 / 2
+					ld		h,e
+					ld		l,0
+					sra		c
+					rr		h
+					rr		l
+					ld		a,d						; B = DE's sign, for its top byte
+					rla
+					sbc		a,a
+					ld		b,a
+					or		a
+					sbc		hl,de					; less DE
+					ld		a,c
+					sbc		a,b
+					ld		c,a
+					ld		a,h						; E = (C:H + 2) >> 2's low byte
+					add		a,2
+					ld		e,a
+					ld		a,c
+					adc		a,0
+					sra		a
+					rr		e
+					sra		a
+					rr		e
+					push	de
+					ld		de,16384				; rounded
+					add		hl,de
+					ld		a,c
+					adc		a,0
+					add		hl,hl					; A = bits 15..22
+					rla
+					pop		de
+					ld		b,a						; E less 32 A, in its low byte
+					and		7
+					rrca
+					rrca
+					rrca
+					ld		c,a
+					ld		a,e
+					sub		c
+					ld		e,a
+					ld		a,b
+					ret
+
+; ---------------------------------------------------------------------------
+; fine_centre: view_t, the centre cull_object has just let through, with
+; what the rounding of Rc's entries left out put back (game.fine_centre):
+; on each axis, (fine_t's row times d + 16) >> 5, d = P - C, the object at
+; IX's position less the camera's. Keeps IX. Uses everything else but IY
+; and the alternate registers.
+fine_centre:
+					ld		l,(ix + OBJECT_X)		; d, 16 bits each way, wrapping
+					ld		h,(ix + OBJECT_X + 1)	; as the world does
+					ld		de,(camera_x)
+					or		a
+					sbc		hl,de
+					ld		(fine_d),hl
+					ld		l,(ix + OBJECT_X + 2)
+					ld		h,(ix + OBJECT_X + 3)
+					ld		de,(camera_y)
+					or		a
+					sbc		hl,de
+					ld		(fine_d + 2),hl
+					ld		l,(ix + OBJECT_X + 4)
+					ld		h,(ix + OBJECT_X + 5)
+					ld		de,(camera_z)
+					or		a
+					sbc		hl,de
+					ld		(fine_d + 4),hl
+					ld		hl,fine_t				; fine_row walks fine_t's rows,
+					ld		(fine_row),hl
+					ld		hl,view_t				; and HL view_t's axes
+					ld		b,3
+.axis:
+					push	bc
+					push	hl
+					ld		hl,0					; the row times d, 24 bits, in
+					ld		(fine_sum),hl			; fine_sum
+					xor		a
+					ld		(fine_sum + 2),a
+					ld		de,(fine_d)
+					call	fine_term
+					ld		de,(fine_d + 2)
+					call	fine_term
+					ld		de,(fine_d + 4)
+					call	fine_term
+					ld		hl,(fine_sum)			; C:H = (it + 16) >> 5
+					ld		a,(fine_sum + 2)
+					ld		c,a
+					ld		de,16
+					add		hl,de
+					jr		nc,.rounded
+					inc		c
+.rounded:
+					add		hl,hl
+					rl		c
+					add		hl,hl
+					rl		c
+					add		hl,hl
+					rl		c
+					ld		e,h						; DE, 16 bits
+					ld		d,c
+					ld		a,c						; C = its sign, for the top byte
+					rla
+					sbc		a,a
+					ld		c,a
+					pop		hl						; view_t's axis += it
+					ld		a,(hl)
+					add		a,e
+					ld		(hl),a
+					inc		hl
+					ld		a,(hl)
+					adc		a,d
+					ld		(hl),a
+					inc		hl
+					ld		a,(hl)
+					adc		a,c
+					ld		(hl),a
+					inc		hl
+					pop		bc
+					djnz	.axis
+					ret
+
+; fine_term: fine_sum += the residual at fine_row, a signed byte within
+; +-16, times DE, signed 16 bits: 24 bits, by five rounds of shift and add;
+; fine_row on to the next. Uses AF, BC, DE, HL.
+fine_term:
+					ld		hl,(fine_row)
+					ld		a,(hl)
+					inc		hl
+					ld		(fine_row),hl
+					or		a
+					jp		p,.size
+					neg								; A = |A|, and DE negated for it
+					ld		c,a
+					xor		a
+					sub		e
+					ld		e,a
+					sbc		a,a
+					sub		d
+					ld		d,a
+					ld		a,c
+.size:
+					add		a,a						; B = the multiplier, its bit 4 at
+					add		a,a						; the top
+					add		a,a
+					ld		b,a
+					ld		a,d						; C = DE's sign, for its top byte
+					rla
+					sbc		a,a
+					ld		c,a
+					xor		a						; A:H:L = B DE
+					ld		h,a
+					ld		l,a
+					REPT	5
+					add		hl,hl
+					rla
+					sla		b						; the multiplier's next bit, the
+					jr		nc,$ + 4				; highest first
+					add		hl,de
+					adc		a,c
+					EDUP
+					ld		de,(fine_sum)			; fine_sum += A:H:L
+					add		hl,de
+					ld		(fine_sum),hl
+					ld		e,a
+					ld		a,(fine_sum + 2)
+					adc		a,e
+					ld		(fine_sum + 2),a
+					ret
+
+fine_t:				DS		9						; Rc^T's residuals, row by row
+fine_d:				DS		6						; P - C
+fine_sum:			DS		3
+fine_row:			DW		0
+
+camera_sx:			DW		0						; sine_cosine's: sin, cos
+camera_cx:			DW		0
+camera_sy:			DW		0
+camera_cy:			DW		0
+camera_sz:			DW		0
+camera_cz:			DW		0
+camera_sxsz:		DW		0
+camera_sxcz:		DW		0
+
+sine_table:			SINE_TABLE						; flight.SINE: 32,767 sin, 257 words
 
 
 					INCLUDE	"fast3d.s"

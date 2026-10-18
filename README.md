@@ -126,12 +126,29 @@ is shown ([ADR 0003](docs/adr/0003-panel-on-both-screens.md)).
 
 The cockpit view is fast3d's camera at the pilot's eye, 7 feet above the
 main wheels, turned as the Cub is: rolled by its bank about its own
-length, then pitched, then turned to its heading. fast3d's `make_matrix`
-turns the other way round, rolling last about the world's axis, so with
-the wings level it makes the camera's matrix alone, and banked the matrix
-is made from two of them, multiplied as an object's view matrix is
-(`game.camera_matrix`). The line of sight
-is 6 degrees below the fuselage's datum, so that tail down, 13.6 degrees
+length, then pitched, then turned to its heading. Its matrix is made from
+the Cub's angles in their full 16 bits, with the flight model's
+interpolated sines, as products of two or three of them
+(`game.camera_matrix`, and `camera_matrix` in cub.s), each entry then
+rounded to fast3d's byte. fast3d's own `make_matrix` would not do: it
+takes its angles in whole 256ths of a turn, so the view turned in steps of
+1.4 degrees, a jump of 6 pixels at the horizon, and it rolls last, about
+the world's axis rather than the Cub's. The Z80 hands the matrix to
+fast3d's `set_camera_matrix`. Every entry is within 0.54 of a 127th of
+the true rotation, so the view turns in steps of about half a degree.
+
+That half a 127th is still enough to put an object a third of a degree
+from where it is, and as the view turns the entries round now one way
+and now the other: the objects wobbled by a pixel a frame, and up to 3.
+So each entry's rounding is kept as well, in 32nds of a 127th, and once
+the cull has let an object through, its centre in camera space, T, has
+their share put back: (R^T d + 16) >> 5, d the object's position less the
+eye's (`game.fine_centre`, and `fine_centre` in cub.s). T is then within
+0.03 pixels of exact on average, and its error changes by 0.03 pixels a
+frame as the view turns, against 1.1. The vertices about the centre, from
+the object's own byte matrix, are within 0.3 pixels of steady.
+
+The line of sight is 6 degrees below the fuselage's datum, so that tail down, 13.6 degrees
 nose up, the view is not all sky. The view is 256 by 144 pixels, centred on row 72: fast3d's
 `SCREEN_CENTRE_Y` is defined to match, and lines are clipped to the view. One unit is a foot, so fast3d's near plane is 8 feet from the
 eye and its far plane 8,191 feet away. The world wraps (fast3d's
@@ -156,9 +173,11 @@ Each end takes two of fast3d's `divide_wide`, then the line goes through
 `clip_line`. An end lies within 2.13 pixels of the true line worked out
 from the same matrix, 0.62 on average.
 
-A frame at the start takes about 529,000 T-states, about 6.7 frames a
+A frame at the start takes about 605,000 T-states, about 5.9 frames a
 second on a 128K's 3.5469 MHz. Clearing the whole view is about 61,000 of
-that.
+that, the camera's matrix about 28,000 (its 20 multiplications are a
+plain 16 rounds of shift and add each), and putting each object's centre
+right 5,100 an object, 51,000 for the start's ten.
 
 ### Memory
 
@@ -227,23 +246,26 @@ The checks:
   kinds are models.py's.
 - `view_test.py` checks the horizon for 20,000 cameras, every pitch
   among them, against the true line worked out in floating point. It
-  checks it for 2,000 banked attitudes of the Cub against where the bank
-  puts it, the level horizon turned about the view's centre, so that the
-  view rolls about the Cub's own length whatever the heading. It also
+  checks the camera's matrix for 5,000 attitudes against the rotation
+  they make in floating point, and the horizon for 2,000 banked attitudes
+  of the Cub against where the bank puts it, the level horizon turned
+  about the view's centre, so that the view rolls about the Cub's own
+  length whatever the heading. It checks the objects' centres, at 300
+  attitudes round the airfield, against where their positions land in
+  floating point: 0.03 pixels out on average, 0.17 at most. It also
   checks that at the start of a flight the runway's sides are drawn where
   they come into the view, worked out exactly from the runway's corners.
 - `frames_test.py` builds Cub and loads it into the snapshot probe
   (build it with `cpp-core\build.ps1 -Release -Target snapshot_probe`). It
   calls `setup` and turns the test mode on, then runs ten scripted frames
   of steps, then 60 more from varied states poked into the Z80's state, at
-  every pitch and heading, round the airfield and above it. After every
+  every pitch, heading and bank, round the airfield and above it. After every
   frame the game state and the screen drawn on must match the Python
   model's, all but the panel: the state's shown_ fields and the screen's
   rows below the view. Until the Z80 has the flight model, the keys held
   are bits no key has: standing idling on the parking brake, a step
   changes nothing but the clock. The varied frames run no steps, so they
-  compare only the view, and their wings are level, since the Z80's
-  camera does not roll about the Cub's length yet.
+  compare only the view.
 - `ground_test.py` drives scripted runs through the frame and checks them
   against what j3.py's figures work out to in floating point. It covers
   the start, the throttle staying where it is set, and the tail starting
@@ -301,8 +323,12 @@ stops dropping 7.5 degrees too late; with the side stick not springing back, the
 stick and the attitude checks fail. With the panel's heading a degree
 short in 360, its sink drawn as climb, its light lit only once stalled or
 never updated, or its airspeed 0.3% slow, the panel check fails. With the
-camera rolling about the world's axis, or the wrong way, the banked
-horizon is up to 95 or 138 pixels out.
+camera rolling the wrong way, or one of its matrix's entries' signs
+wrong, the camera check fails, its entries up to 204 127ths out; with the
+Z80 putting one entry in another's place, 139 pixels of the first frame
+differ. Without the objects' centres put right, they are 0.85 pixels out
+on average and up to 2.5; without it on the Z80 alone, 48 pixels of the
+first frame differ.
 
 ## Not done
 
@@ -317,8 +343,7 @@ The stages still to come, in order, are this repository's sub-issues:
 Some limits so far:
 
 - The Spectrum version has no flight model and no panel, and outside the
-  test mode reads no keys. Its camera does not roll about the Cub's
-  length yet.
+  test mode reads no keys.
 - In the air the attitude holds where it is left: the Cub has no
   stability of its own to bring its nose back to where it flies trimmed.
   The rudder does nothing in the air, and there is no spin, slip or

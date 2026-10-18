@@ -39,25 +39,33 @@ COLOURS = [(0, 0, 0), (0, 0, 0xD7), (0xD7, 0, 0), (0xD7, 0, 0xD7),
 BORDER_COLOUR = 1                   # blue, as cub.s sets it
 
 
-def to_pixels(screen: bytes) -> list:
-    """The screen as rows of 256 colours, ink where a pixel is set."""
+# Eight pixels' RGB bytes, by the screen's byte and its attribute's colours:
+# made as they are first needed.
+EIGHT = {}
+
+
+def eight(bits: int, attribute: int) -> bytes:
+    key = (bits, attribute & 0x3F)
+    if key not in EIGHT:
+        ink, paper = bytes(COLOURS[attribute & 7]), bytes(COLOURS[(attribute >> 3) & 7])
+        EIGHT[key] = b"".join(ink if bits & (0x80 >> i) else paper for i in range(8))
+    return EIGHT[key]
+
+
+def to_rgb(screen: bytes) -> bytes:
+    """The screen as 256 by 192 RGB pixels, ink where a pixel is set."""
     rows = []
     for y in range(192):
-        row = []
-        for x in range(256):
-            attribute = screen[6144 + 32 * (y >> 3) + (x >> 3)]
-            lit = screen[model.screen_address(x, y) - 0x4000] & (0x80 >> (x & 7))
-            row.append(COLOURS[attribute & 7] if lit else COLOURS[(attribute >> 3) & 7])
-        rows.append(row)
-    return rows
+        line = model.screen_address(0, y) - 0x4000
+        attributes = 6144 + 32 * (y >> 3)
+        rows.append(b"".join(eight(screen[line + i], screen[attributes + i]) for i in range(32)))
+    return b"".join(rows)
 
 
 def surface(pygame, screen: bytes):
     image = pygame.Surface((256 + 2 * BORDER, 192 + 2 * BORDER))
     image.fill(COLOURS[BORDER_COLOUR])
-    for y, row in enumerate(to_pixels(screen)):
-        for x, colour in enumerate(row):
-            image.set_at((BORDER + x, BORDER + y), colour)
+    image.blit(pygame.image.frombuffer(to_rgb(screen), (256, 192), "RGB"), (BORDER, BORDER))
     return pygame.transform.scale(image, (image.get_width() * SCALE, image.get_height() * SCALE))
 
 

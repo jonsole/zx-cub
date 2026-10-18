@@ -151,41 +151,113 @@ def eye(state: State) -> tuple:
 
 
 def camera_angles(state: State) -> tuple:
-    """fast3d's camera angles, about x, y and z: pitch (fast3d's is nose
-    down, and the line of sight VIEW_DOWN below the datum), heading, and
-    the roll (fast3d's turns the view's right side up: the Cub banked
-    left)."""
-    return ((VIEW_DOWN - state.pitch) >> 8) & 0xFF, state.heading >> 8, ((-state.bank) >> 8) & 0xFF
+    """The camera's angles, 65,536 to the turn, about x, y and z as fast3d
+    turns them: the pitch (fast3d's is nose down, and the line of sight
+    VIEW_DOWN below the datum), the heading, and the roll (fast3d's turns
+    the view's right side up: the Cub banked left)."""
+    return (VIEW_DOWN - state.pitch) & 0xFFFF, state.heading, (-state.bank) & 0xFFFF
+
+
+def q15(a: int, b: int) -> int:
+    """A product of two numbers with 32,767 for 1.0, floored, as the Z80
+    takes the high word of a 32-bit product shifted left once."""
+    return (a * b) >> 15
+
+
+def matrix_entry(q: int) -> int:
+    """A Q15 entry as fast3d keeps it, 127 for 1.0: (127 q + 16,384) >> 15.
+    The entries' sums never pass 16 bits: each is at most 1 in size, and
+    the table's sines are at most 32,767, so floors cannot take one past."""
+    if not -32768 <= q <= 32767:
+        raise ValueError(f"a camera matrix entry of {q} does not fit 16 bits")
+    return (q * 127 + 16384) >> 15
+
+
+RESIDUAL_SHIFT = 5                  # residuals in 32nds of an entry's unit: 4,064 for 1.0
+
+
+def matrix_residual(q: int) -> int:
+    """What rounding a Q15 entry to a byte left out, in 32nds of the byte's
+    unit: (127 q + 512) >> 10, the entry with 127 x 32 for 1.0, less 32
+    times matrix_entry's. Within +-16, so that the Z80 multiplies by it in
+    five rounds, and keeps only its low byte."""
+    residual = ((q * 127 + 512) >> 10) - (matrix_entry(q) << RESIDUAL_SHIFT)
+    if not -16 <= residual <= 16:
+        raise ValueError(f"the residual {residual} of {q} is past 16")
+    return residual
+
+
+def camera_q15(state: State) -> list:
+    """Rc, the camera's matrix, row by row, in Q15: the Cub's attitude,
+    rolled about its own length, then pitched, then turned to its heading,
+    Ry Rx Rz in fast3d's senses. Made from the full 16-bit angles, with the
+    flight model's interpolated sines, so that the view turns smoothly:
+    fast3d's make_matrix takes its angles in whole 256ths of a turn, steps
+    of 1.4 degrees, and turns the other way round, Rz Ry Rx. Each product
+    is q15's, in this order, as the Z80 makes them."""
+    x, y, z = camera_angles(state)
+    sx, cx, sy, cy, sz, cz = (flight.sin16(x), flight.cos16(x), flight.sin16(y), flight.cos16(y),
+                              flight.sin16(z), flight.cos16(z))
+    sxsz, sxcz = q15(sx, sz), q15(sx, cz)
+    return [q15(cy, cz) + q15(sy, sxsz), q15(sy, sxcz) - q15(cy, sz), q15(sy, cx),
+            q15(cx, sz), q15(cx, cz), -sx,
+            q15(cy, sxsz) - q15(sy, cz), q15(sy, sz) + q15(cy, sxcz), q15(cy, cx)]
 
 
 def camera_matrix(state: State) -> list:
-    """Rc, the camera's matrix: the Cub's attitude, rolled about its own
-    length, then pitched, then turned to its heading, Ry Rx Rz. fast3d's
-    make_matrix turns the other way round, Rz Ry Rx, the roll last and about
-    the world's axis; so, banked, Rc is made from two of them, as M = Rc^T Ro
-    is for an object: view_matrix(Ry(-heading), (Rz(-roll) Rx(-pitch))^T).
-    With the wings level the two orders are the same, and make_matrix alone
-    makes it."""
-    x, y, z = camera_angles(state)
-    if z == 0:
-        return model.make_matrix(x, y, 0)
-    return model.view_matrix(model.make_matrix(0, -y & 0xFF, 0), model.transpose(model.make_matrix(-x & 0xFF, 0, -z & 0xFF)))
+    """Rc as fast3d keeps it, row by row, each entry a byte, 127 for 1.0."""
+    return [matrix_entry(q) for q in camera_q15(state)]
+
+
+def camera_residuals(state: State) -> list:
+    """What rounding Rc's entries to bytes left out, row by row, in 32nds
+    of a byte's unit."""
+    return [matrix_residual(q) for q in camera_q15(state)]
+
+
+def fine_centre(t: tuple, position: tuple, camera: tuple, residuals: list) -> tuple:
+    """An object's centre in camera space, T, with what Rc's rounding left
+    out put back. fast3d's cull works T out as Rc^T d exactly, d = P - C,
+    with Rc's entries in bytes: rounded, each up to half a 127th out, which
+    puts an object up to a third of a degree from where it is, and as the
+    camera turns they round now one way and now the other, so that the
+    objects wobble by a pixel or more a frame. The residuals' share,
+    (R^T d + 16) >> 5, makes T good to an 8,000th instead, a 30th of a
+    pixel. Only for an object the cull lets through, as the Z80 does it:
+    the cull is generous enough not to need it."""
+    d = [model.to_signed16(p - c) for p, c in zip(position, camera)]
+    half = 1 << (RESIDUAL_SHIFT - 1)
+    return tuple(t[i] + ((sum(residuals[3 * j + i] * d[j] for j in range(3)) + half) >> RESIDUAL_SHIFT)
+                 for i in range(3))
+
+
+def objects_seen(state: State, world: World) -> list:
+    """Each object the camera sees, in the world's order, as (the object,
+    T its centre in camera space, its points, its cut lines): the points
+    transform_object's, None behind the near plane, and the cut lines
+    cut_edges', each edge crossing the near plane from its front end's
+    point to where it crosses."""
+    rc, residuals = camera_matrix(state), camera_residuals(state)
+    camera = eye(state)
+    seen = []
+    for o in world.objects:
+        vertices, edges = models.model(o.model)
+        t = model.view_centre(o.position, camera, rc, wrap=True)
+        if t is None or model.culled(t, model.bounding_radius(vertices)):
+            continue
+        t = fine_centre(t, o.position, camera, residuals)
+        m = model.view_matrix(rc, model.make_matrix(0, o.turn, 0))
+        seen.append((o, t) + model.object_lines(vertices, edges, m, t, CENTRE_X, CENTRE_Y))
+    return seen
 
 
 def view_lines(state: State, world: World) -> list:
     """The cockpit view's lines, clipped to the view: the horizon, then each
     object the camera sees, its edges in front of the near plane and those
     crossing it cut there."""
-    rc = camera_matrix(state)
-    camera = eye(state)
-    lines = [horizon_line(rc)]
-    for o in world.objects:
-        vertices, edges = models.model(o.model)
-        t = model.view_centre(o.position, camera, rc, wrap=True)
-        if t is None or model.culled(t, model.bounding_radius(vertices)):
-            continue
-        m = model.view_matrix(rc, model.make_matrix(0, o.turn, 0))
-        points, cuts = model.object_lines(vertices, edges, m, t, CENTRE_X, CENTRE_Y)
+    lines = [horizon_line(camera_matrix(state))]
+    for o, _, points, cuts in objects_seen(state, world):
+        _, edges = models.model(o.model)
         lines += [model.clip_line(*points[i], *points[j], WINDOW) for i, j in edges if points[i] and points[j]]
         lines += [model.clip_line(*cut, WINDOW) for cut in cuts]
     return [line for line in lines if line]

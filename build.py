@@ -19,6 +19,7 @@ OUT = CUB / "output"
 sys.path.insert(0, str(CUB))
 sys.path.insert(0, str(CUB.parent / "scripts"))
 
+import flight  # noqa: E402
 import game  # noqa: E402
 import models  # noqa: E402
 import z80file  # noqa: E402
@@ -56,6 +57,11 @@ def write_game(path: Path, world: game.World) -> None:
     lines += [f"STATE_SIZE\t\t\tEQU\t\t{at}", "",
               "; Its value as the Spectrum starts (game.start_state).", "\t\t\t\t\tMACRO\tPOWER_ON_STATE",
               "\t\t\t\t\tDB\t\t" + ", ".join(f"${b:02X}" for b in state), "\t\t\t\t\tENDM", ""]
+    lines += ["; flight.SINE: 32,767 sin, a 256th of a turn apart, one over, for sin16.",
+              "\t\t\t\t\tMACRO\tSINE_TABLE"]
+    lines += ["\t\t\t\t\tDW\t\t" + ", ".join(str(v) for v in flight.SINE[i:i + 8])
+              for i in range(0, len(flight.SINE), 8)]
+    lines += ["\t\t\t\t\tENDM", ""]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

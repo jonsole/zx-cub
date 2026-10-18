@@ -92,19 +92,18 @@ def main():
 
         for number, (keys, steps) in enumerate(SCRIPT):
             run(f"frame {number}", keys, steps)
-        # Then frames from states poked into the Z80's: every pitch and
-        # heading, round the airfield and above it, so that the horizon is
+        # Then frames from states poked into the Z80's: every pitch, heading
+        # and bank, round the airfield and above it, so that the horizon is
         # drawn at every slope and the airfield seen, cut and clipped from
-        # every side. No steps, so that only the view is compared. The wings
-        # level: banked, the camera rolls about the Cub's own length
-        # (game.camera_matrix), which the Z80 does not do yet.
+        # every side. No steps, so that only the view is compared.
         rng = random.Random(1937)
         x0, z0, _ = world.start
         for number in range(VARIED):
             state = replace(state, x=((x0 + rng.randint(-400, 400)) << 16 | rng.randrange(65536)) & 0xFFFFFFFF,
                             y=rng.choice([0, 0, 20, 300]) << 16 | rng.randrange(65536),
                             z=((z0 + rng.randint(-300, 2300)) << 16 | rng.randrange(65536)) & 0xFFFFFFFF,
-                            pitch=rng.randrange(-32768, 32768), heading=rng.randrange(65536), bank=0)
+                            pitch=rng.randrange(-32768, 32768), heading=rng.randrange(65536),
+                            bank=rng.randrange(-32768, 32768))
             z.poke("state", state.pack())
             run(f"varied frame {number}, the eye at {game.eye(state)}, turned {game.camera_angles(state)}", 0, 0)
     for f in failures:
