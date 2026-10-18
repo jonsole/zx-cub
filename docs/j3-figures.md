@@ -86,10 +86,10 @@ coming up at 25 mph are what the model was tuned to; the tests of those
 check the fixed-point stepping and rounding, not the model.
 
 The rest checks against figures it was not tuned to. Full throttle climbs
-at 435 ft a minute at 57 mph, against the published 450. A take-off held
+at 442 ft a minute at 57 mph, against the published 450. A take-off held
 tail down lifts off after 376 ft, against the published 370. At the
 throttle that turns the engine at the manual's cruise r.p.m., 2,150, the
-Cub cruises at 79 mph, against the manual's 73: what the propeller and
+Cub cruises at 78 mph level, against the manual's 73: what the propeller and
 the drag that make the top speed come to there (77 worked out in floating
 point, for level flight). The manual's figures would want more drag or
 less thrust at cruise than at full throttle; the model has neither.

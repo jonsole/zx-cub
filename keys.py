@@ -10,3 +10,5 @@ STICK_BACK = 0x0020             # the stick springs back to the middle when let 
 STICK_FORWARD = 0x0040
 STICK_LEFT = 0x0080             # the stick to the side: rolls the Cub in the air
 STICK_RIGHT = 0x0100
+VIEW = 0x0200                   # the cockpit or the chase view: kept, and acts from the chase view's stage
+NEW_FLIGHT = 0x0400             # back to the runway: kept, and acts from the touchdowns' stage

@@ -18,7 +18,8 @@
 ;   bank 2, $8000   this and fast3d
 ;   bank 5, $4000   the first screen; at $6000 the points, the objects drawn
 ;                   and the lines cut at the near plane
-;   bank 7, $C000   the second screen, paged in all the time
+;   bank 7, $C000   the second screen, paged in all the time; from $DB00
+;                   the flight model (flight.s)
 					DEVICE	ZXSPECTRUM128
 
 					INCLUDE	"output/game_gen.s"		; game.py's constants, and the state's layout
@@ -76,7 +77,7 @@ setup:
 					ldir
 					xor		a
 					ld		(flip_to),a
-					ld		(steps_owed),a
+					ld		(ticks_owed),a
 					ret
 
 ; clear_screen: the screen at HL blank, the view's rows in its colours and
@@ -114,6 +115,15 @@ game_frame:
 					ld		hl,(state + STATE_CLOCK)
 					add		hl,de
 					ld		(state + STATE_CLOCK),hl
+					ld		a,e						; the steps, through the flight
+					or		a						; model, with the keys held
+					jr		z,.flown
+.step:				push	af
+					call	flight_step
+					pop		af
+					dec		a
+					jr		nz,.step
+.flown:
 					call	compute_frame
 					call	wait_flip
 					call	render_frame
@@ -130,8 +140,7 @@ game_frame:
 
 ; read_input: HL = the keys held, A = the steps owed since the last frame,
 ; at most MAX_STEPS. In the test mode, from test_keys and test_steps; else
-; the steps the interrupt counted, and no keys yet (the controls come in a
-; later stage).
+; the keys read_keys reads and the steps the interrupt counted.
 read_input:
 					ld		a,(test_mode)
 					or		a
@@ -139,18 +148,85 @@ read_input:
 					ld		hl,(test_keys)
 					ld		a,(test_steps)
 					jr		.cap
-.live:				ld		hl,0
+.live:				call	read_keys
 					di
-					ld		a,(steps_owed)
-					ld		c,a
-					xor		a
-					ld		(steps_owed),a
+					ld		a,(ticks_owed)			; a step every 1 << STEP_SHIFT ticks: the
+					ld		c,a						; ticks left over wait for the
+					and		(1 << STEP_SHIFT) - 1	; next frame
+					ld		(ticks_owed),a
 					ei
 					ld		a,c
+					REPT	STEP_SHIFT
+					srl		a
+					EDUP
 .cap:				cp		MAX_STEPS + 1
 					ret		c
 					ld		a,MAX_STEPS
 					ret
+
+; read_keys: HL = the keys held, as keys.py's bits: the keyboard, and an
+; Interface II joystick in either of its ports, which read as the keys 6 to
+; 0 and 1 to 5 -- left, right, down, up and fire. Down pulls the stick back,
+; and fire is the brakes. Uses AF, DE, HL, IX.
+read_keys:
+					ld		hl,0
+					ld		ix,key_map
+.key:
+					ld		a,(ix + 0)				; the half-row
+					or		a
+					ret		z
+					in		a,($FE)
+					and		(ix + 1)				; the key's bit: 0 is held
+					jr		nz,.next
+					ld		a,l
+					or		(ix + 2)
+					ld		l,a
+					ld		a,h
+					or		(ix + 3)
+					ld		h,a
+.next:
+					ld		de,4
+					add		ix,de
+					jr		.key
+
+; Each key: its half-row's port high byte, its bit there, and its bit in
+; the keys held.
+key_map:
+					DB		$FB, $01
+					DW		KEY_THROTTLE_UP			; Q
+					DB		$FD, $01
+					DW		KEY_THROTTLE_DOWN		; A
+					DB		$FE, $02
+					DW		KEY_RUDDER_LEFT			; Z
+					DB		$FE, $04
+					DW		KEY_RUDDER_RIGHT		; X
+					DB		$7F, $01
+					DW		KEY_BRAKES				; Space
+					DB		$FE, $10
+					DW		KEY_VIEW				; V
+					DB		$7F, $08
+					DW		KEY_NEW_FLIGHT			; N
+					DB		$EF, $10
+					DW		KEY_STICK_LEFT			; 6, Interface II's first port
+					DB		$EF, $08
+					DW		KEY_STICK_RIGHT			; 7
+					DB		$EF, $04
+					DW		KEY_STICK_BACK			; 8, down
+					DB		$EF, $02
+					DW		KEY_STICK_FORWARD		; 9, up
+					DB		$EF, $01
+					DW		KEY_BRAKES				; 0, fire
+					DB		$F7, $01
+					DW		KEY_STICK_LEFT			; 1, its second port
+					DB		$F7, $02
+					DW		KEY_STICK_RIGHT			; 2
+					DB		$F7, $04
+					DW		KEY_STICK_BACK			; 3, down
+					DB		$F7, $08
+					DW		KEY_STICK_FORWARD		; 4, up
+					DB		$F7, $10
+					DW		KEY_BRAKES				; 5, fire
+					DB		0
 
 ; wait_flip: until the interrupt has shown the last frame. In the test mode
 ; there are no interrupts, so it shows it itself.
@@ -174,7 +250,7 @@ wait_flip:
 
 flip_to:			DB		0						; non-zero: what the next interrupt
 													; writes to port $7FFD
-steps_owed:			DB		0						; steps the interrupt has counted
+ticks_owed:			DB		0						; fiftieths the interrupt has counted
 test_mode:			DB		0						; non-zero: frames_test.py drives it
 test_keys:			DW		0						; and these are the keys held
 test_steps:			DB		0						; and the steps owed
@@ -611,10 +687,12 @@ sine_cosine:
 
 ; sin16: DE = the sine of the angle HL, 65,536 to the turn, Q15, as
 ; flight.sin16: sine_table's two entries either side, interpolated by the
-; low byte, floored. Uses everything but IX, IY and the alternate registers.
+; low byte, floored: s0 + (((s1 - s0) fraction) >> 8), the product by
+; umul16's byte rounds. Uses everything but IX, IY and the alternate
+; registers.
 sin16:
 					ld		a,l						; the fraction
-					push	af
+					ld		(.fraction),a
 					ld		l,h
 					ld		h,0
 					add		hl,hl
@@ -624,28 +702,51 @@ sin16:
 					inc		hl
 					ld		d,(hl)
 					inc		hl
-					ld		c,(hl)					; BC = s1
+					ld		a,(hl)					; HL = s1
 					inc		hl
-					ld		b,(hl)
+					ld		h,(hl)
+					ld		l,a
 					push	de
-					ld		h,b
-					ld		l,c
 					or		a
-					sbc		hl,de
-					ld		b,h						; BC = s1 - s0
+					sbc		hl,de					; HL = s1 - s0, within +-805
+					ld		a,h
+					ld		(.sign),a
+					bit		7,h
+					jr		z,.size
+					xor		a
+					sub		l
+					ld		l,a
+					sbc		a,a
+					sub		h
+					ld		h,a
+.size:
+					ld		b,h
 					ld		c,l
-					pop		hl						; s0
-					pop		af
-					push	hl
+					ld		a,(.fraction)
 					ld		e,a
 					ld		d,0
-					call	multiply				; (s1 - s0) times the fraction,
-					ld		l,h						; HL = that >> 8: at most 805 times
-					ld		h,e						; 255, so 18 bits
+					call	umul16					; E:HL = |s1 - s0| times the fraction
+					ld		a,(.sign)
+					or		a
+					jp		p,.positive
+					xor		a						; negative: E:HL = -E:HL
+					sub		l
+					ld		l,a
+					ld		a,0
+					sbc		a,h
+					ld		h,a
+					ld		a,0
+					sbc		a,e
+					ld		e,a
+.positive:
+					ld		l,h						; >> 8
+					ld		h,e
 					pop		de
 					add		hl,de
 					ex		de,hl
 					ret
+.fraction:			DB		0
+.sign:				DB		0
 
 ; q15: DE = BC DE >> 15, floored (game.q15): the high word of the product
 ; shifted left once. Uses everything but IX, IY and the alternate registers.
@@ -910,6 +1011,15 @@ sine_table:			SINE_TABLE						; flight.SINE: 32,767 sin, 257 words
 code_end:
 					ASSERT	code_end <= IM2_ROUTINE
 
+; The flight model, in bank 7 above its screen: paged in at $C000 all the
+; time, and the screen ends at $DAFF.
+					SLOT	3
+					PAGE	7
+					ORG		$DB00
+					INCLUDE	"flight.s"
+flight_end:
+					ASSERT	flight_end <= $10000
+
 ; Each object drawn: its points, from transform_object, in the four tables
 ; of 64 on one of these pages (POINT_PAGES, from build.py, is enough for
 ; every object at once), and its entry; and the lines cut at the near
@@ -920,12 +1030,12 @@ visible:			DS		VIS_SIZE * WORLD_OBJECTS
 cut_lines:			DS		CUT_LINE_SIZE * CUT_LINES
 					ASSERT	$ <= STACK_FLOOR
 
-; The interrupt: a step owed to the flight model, and the screen flip_to
-; asks for, if it asks.
+; The interrupt: a tick counted, of which every two owe the flight model a
+; step, and the screen flip_to asks for, if it asks.
 					ORG		IM2_ROUTINE
 interrupt:			push	af
 					push	hl
-					ld		hl,steps_owed			; (held at 255)
+					ld		hl,ticks_owed			; (held at 255)
 					inc		(hl)
 					jr		nz,.counted
 					dec		(hl)

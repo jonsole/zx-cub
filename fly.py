@@ -5,7 +5,7 @@ border, three times the size.
     .venv-win\Scripts\python.exe examples\cub\fly.py
     .venv-win\Scripts\python.exe examples\cub\fly.py --shot cub.png   # one frame to a PNG, no window
 
-Each frame runs the steps owed since the last, fiftieths of a second of the
+Each frame runs the steps owed since the last, 25ths of a second of the
 wall clock, as the Spectrum's interrupt counts them. The keys:
 
     Q / A           throttle up / down (it stays where it is left)
@@ -116,7 +116,7 @@ def main() -> None:
         pygame.display.flip()
         pygame.display.set_caption(readout(state))
         now = pygame.time.get_ticks()
-        steps, last = (now - last) // 20, last + (now - last) // 20 * 20
+        steps, last = (now - last) // 40, last + (now - last) // 40 * 40
         state, screen = game.frame(state, world, keys_held(pygame), steps)
 
 

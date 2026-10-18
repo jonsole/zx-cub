@@ -36,7 +36,12 @@ import j3  # noqa: E402
 import keys  # noqa: E402
 
 WORLD = game.load_world()
-STEP = 1 / 50                                   # seconds
+STEP = 1 / flight.STEPS_PER_SECOND              # seconds
+
+
+def seconds(t: float) -> int:
+    """Steps in so many seconds."""
+    return round(t * flight.STEPS_PER_SECOND)
 
 
 class Run:
@@ -95,10 +100,10 @@ def check_start(failures):
           f"throttle {s.throttle}, {s.rpm} r.p.m. (idle {j3.IDLE_RPM:.0f})")
     check(failures, "start, brakes", flight.parked(s), f"parking brake {'on' if flight.parked(s) else 'off'}")
     run = Run()
-    run.hold(0, 250)
+    run.hold(0, seconds(5))
     moved = math.hypot(run.state.x - s.x, run.state.z - s.z) / 65536
     check(failures, "five seconds idling", moved == 0, f"moved {moved:.1f} ft")
-    run.hold(keys.THROTTLE_UP, 500)
+    run.hold(keys.THROTTLE_UP, seconds(10))
     moved = math.hypot(run.state.x - s.x, run.state.z - s.z) / 65536
     check(failures, "ten seconds at full throttle, parked",
           moved == 0 and run.state.throttle == flight.THROTTLE_FULL,
@@ -107,9 +112,9 @@ def check_start(failures):
 
 def check_throttle(failures):
     run = Run()
-    run.hold(keys.THROTTLE_UP, 40)
+    run.hold(keys.THROTTLE_UP, seconds(0.8))
     set_to = run.state.throttle
-    run.hold(0, 200)
+    run.hold(0, seconds(4))
     check(failures, "throttle", 0 < set_to < flight.THROTTLE_FULL and run.state.throttle == set_to,
           f"opened to {set_to}, and {run.state.throttle} four seconds after letting go")
 
@@ -124,7 +129,7 @@ def full_throttle_roll() -> Run:
     """Full throttle with the brakes on until the engine has wound up, then
     the brakes released."""
     run = Run()
-    run.hold(keys.THROTTLE_UP, 150)
+    run.hold(keys.THROTTLE_UP, seconds(3))
     release_brakes(run)
     return run
 
@@ -132,12 +137,12 @@ def full_throttle_roll() -> Run:
 def check_tail(failures):
     for name, stick, elevator in (("central", 0, 0.0), ("forward", keys.STICK_FORWARD, j3.ELEVATOR)):
         run = full_throttle_roll()
-        lifted = run.hold(keys.THROTTLE_UP | stick, 1500, until=flight.tail_up)
+        lifted = run.hold(keys.THROTTLE_UP | stick, seconds(30), until=flight.tail_up)
         want = tail_up_mph(elevator)
         check(failures, f"tail up, stick {name}", lifted and abs(run.mph - want) <= 1.0,
               f"at {run.mph:.1f} mph; {want:.1f} worked out")
     run = full_throttle_roll()
-    run.hold(keys.THROTTLE_UP | keys.STICK_BACK, 1500,
+    run.hold(keys.THROTTLE_UP | keys.STICK_BACK, seconds(30),
              until=lambda s: flight.tail_up(s) or not flight.on_ground(s))
     check(failures, "tail up, stick back", not flight.tail_up(run.state) and not flight.on_ground(run.state),
           f"the tail stayed down until lift-off, at {run.mph:.1f} mph")
@@ -146,7 +151,7 @@ def check_tail(failures):
 def check_lift_off(failures):
     run = full_throttle_roll()
     start = (run.state.x, run.state.z)
-    run.hold(keys.THROTTLE_UP | keys.STICK_BACK, 1500, until=lambda s: not flight.on_ground(s))
+    run.hold(keys.THROTTLE_UP | keys.STICK_BACK, seconds(30), until=lambda s: not flight.on_ground(s))
     check(failures, "lift-off, tail held down", abs(run.mph - j3.LIFT_OFF_MPH) <= 1.0,
           f"at {run.mph:.1f} mph; the manual's {j3.LIFT_OFF_MPH:.0f}")
     roll = math.hypot(run.state.x - start[0], run.state.z - start[1]) / 65536
@@ -154,15 +159,15 @@ def check_lift_off(failures):
           f"{roll:.0f} ft in {run.steps * STEP:.1f} s; {j3.TAKE_OFF_RUN:.0f} published (a secondary source)")
 
     run = full_throttle_roll()
-    run.hold(keys.THROTTLE_UP, 1500, until=lambda s: flight.mph(s) >= 45)
+    run.hold(keys.THROTTLE_UP, seconds(30), until=lambda s: flight.mph(s) >= 45)
     tail_was_up = flight.tail_up(run.state)
     pulled = run.steps
-    run.hold(keys.THROTTLE_UP | keys.STICK_BACK, 200, until=lambda s: not flight.on_ground(s))
+    run.hold(keys.THROTTLE_UP | keys.STICK_BACK, seconds(4), until=lambda s: not flight.on_ground(s))
     took = (run.steps - pulled) * STEP
     check(failures, "lift-off, tail up then pulled back at 45 mph",
           tail_was_up and not flight.on_ground(run.state) and took <= 1.0,
           f"airborne {took:.2f} s after the pull, at {run.mph:.1f} mph")
-    run.hold(keys.THROTTLE_UP, 250)
+    run.hold(keys.THROTTLE_UP, seconds(5))
     check(failures, "climbing away", not flight.on_ground(run.state) and run.state.y > 0,
           f"{(run.state.y >> 16)} ft up five seconds later, at {run.mph:.1f} mph")
 
@@ -180,7 +185,7 @@ def central_lift_off_mph() -> float:
 
 def check_central(failures):
     run = full_throttle_roll()
-    run.hold(keys.THROTTLE_UP, 3000, until=lambda s: not flight.on_ground(s))
+    run.hold(keys.THROTTLE_UP, seconds(60), until=lambda s: not flight.on_ground(s))
     want = central_lift_off_mph()
     check(failures, "lift-off, stick central", not flight.on_ground(run.state) and abs(run.mph - want) <= 1.5,
           f"at {run.mph:.1f} mph, the tail flying itself; {want:.1f} worked out")
@@ -189,10 +194,10 @@ def check_central(failures):
 def taxi(mph: float) -> Run:
     """Rolling straight at about this speed, throttle eased back."""
     run = Run()
-    run.hold(keys.THROTTLE_UP, 60)
+    run.hold(keys.THROTTLE_UP, seconds(1.2))
     release_brakes(run)
-    run.hold(keys.THROTTLE_UP, 1000, until=lambda s: flight.mph(s) >= mph)
-    run.hold(keys.THROTTLE_DOWN, 300)
+    run.hold(keys.THROTTLE_UP, seconds(20), until=lambda s: flight.mph(s) >= mph)
+    run.hold(keys.THROTTLE_DOWN, seconds(6))
     return run
 
 
@@ -201,7 +206,7 @@ def check_rudder(failures):
         run = taxi(12)
         run.hold(rudder, flight.RUDDER_FULL // flight.RUDDER_RATE + 1)       # full rudder
         before, turned = run.state.heading, 0.0
-        for _ in range(100):
+        for _ in range(seconds(2)):
             v = flight.mph(run.state) * j3.MPH
             run.hold(rudder, 1)
             turned += v * STEP / j3.TURN_RADIUS
@@ -233,7 +238,7 @@ def check_brakes(failures):
     if not flight.tail_up(run.state):
         v0 = run.mph
         start = (run.state.x, run.state.z)
-        stopped = run.hold(keys.BRAKES | keys.THROTTLE_DOWN, 1000, until=lambda s: s.speed == 0)
+        stopped = run.hold(keys.BRAKES | keys.THROTTLE_DOWN, seconds(20), until=lambda s: s.speed == 0)
         got = math.hypot(run.state.x - start[0], run.state.z - start[1]) / 65536
         want = stopping_distance(v0, j3.THREE_POINT_ALPHA)
         check(failures, "brakes", stopped and abs(got - want) <= 0.05 * want + 1,

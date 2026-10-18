@@ -1,7 +1,7 @@
 """Cub in Python: the model the Z80 version matches byte for byte.
 
 The frame is the game's interface. Given the game state, the keys held and
-the steps owed (fiftieths of a second since the last frame), `frame` gives
+the steps owed (25ths of a second since the last frame), `frame` gives
 the next game state and the screen it drew on -- the whole 6,912 bytes, as
 the Z80 leaves them. The view is drawn with fast3d's model
 (examples/fast3d/model.py), so it is exactly what the engine draws.
@@ -37,7 +37,8 @@ PANEL_ATTRIBUTE = 0x0F              # white ink on blue paper
 
 EYE_HEIGHT = 7                      # feet: the pilot's eye above the main wheels
 VIEW_DOWN = flight.angle(j3.VIEW_DOWN)      # the line of sight below the fuselage's datum
-MAX_STEPS = 10                      # the most steps a frame runs, however slow it was
+MAX_STEPS = 10                      # the most steps a frame runs, however slow it was:
+                                    # 0.4 seconds, so that a slow frame cannot run away
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,7 @@ class State:
                                     # pitch nose up, bank right wing down
     pitch: int = stored(2, signed=True)
     bank: int = stored(2, signed=True)
-    speed: int = stored(3)          # along the flight path, 2^-16 feet a step
+    speed: int = stored(3)          # along the flight path, 2^-16 feet a tick (flight.py)
     gamma: int = stored(3, signed=True)     # the flight path's climb, angle units times 256
     rpm: int = stored(2)            # the engine
     throttle: int = stored(1)       # 0..255

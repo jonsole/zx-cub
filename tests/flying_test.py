@@ -43,9 +43,15 @@ import j3  # noqa: E402
 import keys  # noqa: E402
 
 WORLD = game.load_world()
-STEP = 1 / 50                                   # seconds
+STEP = 1 / flight.STEPS_PER_SECOND              # seconds
+TICK = 1 / flight.TICKS_PER_SECOND              # seconds: speed is 2^-16 feet a tick
 FOOT = 65536                                    # a position's unit
-LEAD = 50                                       # steps the pilot looks ahead
+LEAD = flight.STEPS_PER_SECOND                  # steps the pilot looks ahead: a second
+
+
+def seconds(t: float) -> int:
+    """Steps in so many seconds."""
+    return round(t * flight.STEPS_PER_SECOND)
 
 
 def degrees(angle: float) -> float:
@@ -54,8 +60,8 @@ def degrees(angle: float) -> float:
 
 
 def mph(s) -> float:
-    """The state's speed, 2^-16 feet a step, in miles an hour."""
-    return s.speed / FOOT / STEP / j3.MPH
+    """The state's speed, 2^-16 feet a tick, in miles an hour."""
+    return s.speed / FOOT / TICK / j3.MPH
 
 
 def attack(s) -> float:
@@ -70,7 +76,7 @@ def flying(at_mph: float, throttle: int, height: int = 1000):
     it."""
     cl = j3.WEIGHT / (j3.q(at_mph) * j3.WING_AREA)
     pitch = cl / j3.CL_SLOPE + j3.ALPHA_ZERO_LIFT - j3.INCIDENCE
-    return replace(game.start_state(WORLD), y=height * FOOT, speed=round(at_mph * j3.MPH * FOOT * STEP),
+    return replace(game.start_state(WORLD), y=height * FOOT, speed=round(at_mph * j3.MPH * FOOT * TICK),
                    pitch=round(pitch * 65536 / 360), gamma=0, throttle=throttle, rpm=round(j3.IDLE_RPM), flags=0)
 
 
@@ -144,7 +150,7 @@ def check_stick(failures):
           and (after.stick, after.stick_roll) == (0, 0),
           f"held back and right, at {held.stick}, {held.stick_roll}; {len(let_go)} steps after letting go, "
           f"{after.stick}, {after.stick_roll}")
-    later = fly(after, 100, lambda s: 0)[-1]
+    later = fly(after, seconds(2), lambda s: 0)[-1]
     check(failures, "the attitude stays", later.bank == after.bank and later.pitch == after.pitch
           and after.bank > 0,
           f"banked {degrees(after.bank):.1f}, pitched {degrees(after.pitch):.1f} degrees when let go; "
@@ -153,7 +159,7 @@ def check_stick(failures):
 
 def check_stall(failures):
     pilot = Pilot()
-    states = fly(flying(60, 0), 5000, pilot.level, until=flight.stalled)
+    states = fly(flying(60, 0), seconds(100), pilot.level, until=flight.stalled)
     warned = next((s for s in states if flight.stall_warning(s)), None)
     s = states[-1]
     warning_alpha = j3.STALL_ALPHA - j3.STALL_WARNING
@@ -167,7 +173,7 @@ def check_stall(failures):
 
     # Holding the stick back: the nose drops all the same, the light on.
     pitch = s.pitch
-    after = fly(s, 25, lambda s: keys.STICK_BACK)
+    after = fly(s, seconds(0.5), lambda s: keys.STICK_BACK)
     dropped = degrees(pitch - min(a.pitch for a in after))
     lit = all(flight.stall_warning(a) for a in after if flight.stalled(a))
     check(failures, "stall, the nose drops", dropped >= 5 and lit,
@@ -176,7 +182,7 @@ def check_stall(failures):
     # Let go: the nose stops dropping once the wing is flying again (the
     # step it is, the path still sinking, adds a little to the attack), and
     # it flies on as the speed builds.
-    recovery = fly(after[-1], 500, lambda s: 0)
+    recovery = fly(after[-1], seconds(10), lambda s: 0)
     flies = next((a for a in after + recovery if not flight.stalled(a)), None)
     check(failures, "stall, the nose stops", flies is not None
           and abs(attack(flies) - j3.RECOVER_ALPHA) <= 1,
@@ -191,7 +197,7 @@ def check_stall(failures):
           f"{(s.y - end.y) // FOOT} ft lower" if out is not None else "still stalled")
 
 
-def level_flight(throttle: int, settle: int = 3000, measure: int = 500) -> tuple:
+def level_flight(throttle: int, settle: int = seconds(60), measure: int = seconds(10)) -> tuple:
     """(mph, r.p.m., ft a second up) held level at a throttle, averaged once
     settled. The pilot holds the path near level, not on it, so it says
     how near."""
@@ -207,34 +213,41 @@ def speed_flying(rising: float, rpm_at) -> float:
 
 
 def check_speeds(failures):
+    # The pilot holds the path near level, not on it: the fixed point is
+    # checked against the figures' physics on the path flown, and the
+    # published figure against what the model would fly level, the
+    # measured speed less the difference the path makes.
     top, rpm, rising = level_flight(flight.THROTTLE_FULL)
     want = speed_flying(rising, j3.full_rpm)
-    check(failures, "top speed", abs(top - want) <= 1.0 and abs(top - j3.TOP_MPH) <= 2,
-          f"{top:.1f} mph at full throttle, {rpm:.0f} r.p.m., {rising * 60:+.0f} ft a minute; "
-          f"{want:.1f} worked out, {j3.TOP_MPH:.0f} published level")
+    level = top + speed_flying(0, j3.full_rpm) - want
+    check(failures, "top speed", abs(top - want) <= 1.0 and abs(level - j3.TOP_MPH) <= 2,
+          f"{top:.1f} mph at full throttle, {rpm:.0f} r.p.m., {rising * 60:+.0f} ft a minute, {want:.1f} worked "
+          f"out; so {level:.1f} level, {j3.TOP_MPH:.0f} published")
 
     # The throttle that turns the engine at the cruise r.p.m. when level.
     lo, hi = 128, flight.THROTTLE_FULL
     while hi - lo > 1:
         mid = (lo + hi) // 2
-        if level_flight(mid, 2000, 250)[1] < j3.CRUISE_RPM:
+        if level_flight(mid, seconds(40), seconds(5))[1] < j3.CRUISE_RPM:
             lo = mid
         else:
             hi = mid
     cruise, rpm, rising = level_flight(hi)
     want = speed_flying(rising, lambda v: rpm)
-    check(failures, "cruise", abs(cruise - want) <= 1.0 and abs(cruise - j3.CRUISE_MPH) <= 0.1 * j3.CRUISE_MPH,
-          f"{cruise:.1f} mph at throttle {hi}, {rpm:.0f} r.p.m., {rising * 60:+.0f} ft a minute; "
-          f"{want:.1f} worked out, the manual's {j3.CRUISE_MPH:.0f} at {j3.CRUISE_RPM:.0f}")
+    level = cruise + speed_flying(0, lambda v: rpm) - want
+    check(failures, "cruise", abs(cruise - want) <= 1.0 and abs(level - j3.CRUISE_MPH) <= 0.1 * j3.CRUISE_MPH,
+          f"{cruise:.1f} mph at throttle {hi}, {rpm:.0f} r.p.m., {rising * 60:+.0f} ft a minute, {want:.1f} worked "
+          f"out; so {level:.1f} level, the manual's {j3.CRUISE_MPH:.0f} at {j3.CRUISE_RPM:.0f}")
 
 
 def check_climb(failures):
     climbs = {v: excess_thrust(v, j3.full_rpm(v)) * v * j3.MPH / j3.WEIGHT * 60 for v in range(40, 88)}
     best = max(climbs, key=climbs.get)
-    target = round(best * j3.MPH * FOOT * STEP)
-    states = fly(flying(best, flight.THROTTLE_FULL), 3000, Pilot().holding(target))
-    a, b = states[1000], states[-1]
-    fpm = (b.y - a.y) / FOOT / ((len(states) - 1001) * STEP) * 60
+    target = round(best * j3.MPH * FOOT * TICK)
+    states = fly(flying(best, flight.THROTTLE_FULL), seconds(60), Pilot().holding(target))
+    settled = seconds(20)
+    a, b = states[settled], states[-1]
+    fpm = (b.y - a.y) / FOOT / ((len(states) - 1 - settled) * STEP) * 60
     check(failures, "climb", abs(fpm - climbs[best]) <= 0.05 * climbs[best] and abs(fpm - j3.CLIMB_FPM)
           <= 0.1 * j3.CLIMB_FPM,
           f"{fpm:.0f} ft a minute at {mph(b):.1f} mph, full throttle; {climbs[best]:.0f} worked out at {best}, "
@@ -244,10 +257,10 @@ def check_climb(failures):
 def check_turn(failures):
     for name, stick, sign in (("right", keys.STICK_RIGHT, 1), ("left", keys.STICK_LEFT, -1)):
         pilot = Pilot()
-        rolled = fly(flying(70, 220), 500, lambda s: pilot.level(s) | stick,
+        rolled = fly(flying(70, 220), seconds(10), lambda s: pilot.level(s) | stick,
                      until=lambda s: abs(degrees(s.bank)) >= 30)[-1]
         s, turned = rolled, 0.0
-        for _ in range(500):
+        for _ in range(seconds(10)):
             v = mph(s) * j3.MPH
             lift = j3.q(mph(s)) * j3.WING_AREA * j3.lift_coefficient(attack(s))
             turned += lift * math.sin(math.radians(degrees(s.bank))) / (j3.WEIGHT / j3.G * v) * STEP
@@ -258,7 +271,7 @@ def check_turn(failures):
               f"{math.degrees(turned):+.1f} worked out")
     pilot = Pilot()
     level = flying(70, 220)
-    s = fly(level, 500, pilot.level)[-1]
+    s = fly(level, seconds(10), pilot.level)[-1]
     check(failures, "wings level", s.heading == level.heading, f"heading {s.heading >> 8} after ten seconds, "
           f"from {level.heading >> 8}")
 
@@ -267,7 +280,7 @@ def check_turn(failures):
     left_alone = {}
     for name, bank in (("level", 0), ("banked", 30)):
         start = replace(level, bank=round(bank * 65536 / 360))
-        left_alone[name] = fly(start, 150, lambda s: 0)[-1]
+        left_alone[name] = fly(start, seconds(3), lambda s: 0)[-1]
     sank = (left_alone["level"].y - left_alone["banked"].y) / FOOT
     lift = j3.q(70) * j3.WING_AREA * j3.lift_coefficient(attack(level))
     want = lift * (1 - math.cos(math.radians(30))) / (j3.WEIGHT / j3.G) * 3 ** 2 / 2

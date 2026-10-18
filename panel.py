@@ -44,9 +44,9 @@ FPM_A_PIXEL = 25                    # feet a minute a pixel: 800 either way, pas
 
 # Airspeed in miles an hour: (V16 K_MPH) >> 20, V16 = speed >> 4.
 K_MPH = round(16 * 2 ** 20 / (j3.MPH * flight.SPEED_PER_FPS))
-# The climb bar: a step's rise, 2^-16 feet, (rise K_CLIMB) >> 16 pixels,
+# The climb bar: a tick's rise, 2^-16 feet, (rise K_CLIMB) >> 16 pixels,
 # truncated toward zero.
-K_CLIMB = round(flight.STEPS_PER_SECOND * 60 / FPM_A_PIXEL)
+K_CLIMB = round(flight.TICKS_PER_SECOND * 60 / FPM_A_PIXEL)
 
 # What the panel shows at the start of a flight, by the state's fields that
 # keep it: what no value can be at the start, so that the first frame draws

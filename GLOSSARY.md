@@ -17,8 +17,11 @@ The rules that turn the controls, the throttle and the Cub's state into its next
 _Avoid_: Physics, simulation
 
 **Step**:
-One fiftieth of a second of the flight model; a frame runs as many steps as have passed since the last one.
-_Avoid_: Tick, update
+One 25th of a second of the flight model, two ticks; a frame runs as many steps as have passed since the last one.
+_Avoid_: Update
+
+**Tick**:
+A fiftieth of a second, the Spectrum's interrupt; the unit the flight model's speeds and forces are in.
 
 **Three-point attitude**:
 The Cub resting on its two main wheels and its tailwheel, nose high: how it stands, taxis, and lifts off when the stick is held back.

@@ -4,13 +4,13 @@ The Z80 version has to match the Python model byte for byte after every
 frame. So the Python flight model is not a model in floating point for
 the Z80 to approximate. It is integer arithmetic of exactly the kind the
 Z80 does cheaply: products, shifts right that floor as `SRA` does, one
-division a step, and a sine looked up in a table and interpolated. Its
+division a step, and a sine looked up in a table. Its
 units are chosen to fit, each with a width the Z80 keeps it in, and the
 model holds every value to its width as the Z80 would:
 
 - angles 65,536 to the turn;
 - positions in feet as 16.16;
-- speed in 2^-16 feet a step.
+- speed in 2^-16 feet a tick, a fiftieth of a second ([ADR 0004](0004-a-step-is-two-ticks.md)).
 
 Its constants are worked out once from the J-3's figures in `j3.py` and
 rounded. The Z80 version then implements the same operations, in the same

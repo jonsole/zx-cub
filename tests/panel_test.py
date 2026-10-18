@@ -26,7 +26,7 @@ import panel  # noqa: E402
 from fast3d import model  # noqa: E402
 
 WORLD = game.load_world()
-STEP = 1 / 50                                   # seconds
+TICK = 1 / flight.TICKS_PER_SECOND              # seconds: speed is 2^-16 feet a tick
 FOOT = 65536                                    # a position's unit
 STEPS = 3                                       # a frame
 EDGE = 0.02                                     # how near a boundary rounding may fall either side
@@ -40,7 +40,7 @@ def degrees(angle: float) -> float:
 
 
 def mph(s) -> float:
-    return s.speed / FOOT / STEP / j3.MPH
+    return s.speed / FOOT / TICK / j3.MPH
 
 
 def climb_fpm(s) -> float:
